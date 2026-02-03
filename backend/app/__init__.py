@@ -38,7 +38,9 @@ def create_app(config_class=Config):
     from app.users.routes import users
     from app.search.routes import search
     from app.auth.routes import auth
-
+    from app.posts.routes import posts
+    
+    app.register_blueprint(posts, url_prefix="/api/posts")
     app.register_blueprint(auth, url_prefix="/api/auth")
     app.register_blueprint(users, url_prefix="/api/users")
     app.register_blueprint(search, url_prefix="/api/search")
