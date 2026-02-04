@@ -18,6 +18,7 @@ def create_intent():
         amount=data['amount'],
         currency=data.get('currency', 'USD'),
         description=f"Deposit for event: {data.get('event_name', 'Unknown')}",
+        payment_type=data.get('type', 'CONDITIONAL'),
         settlement_method=data.get('settlement_method', 'OFF_RAMP_MOCK'),
         settlement_destination=data.get('settlement_destination', 'test_account')
     )
