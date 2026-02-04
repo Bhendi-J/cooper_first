@@ -13,7 +13,6 @@ def register():
     data = request.json
     email = data.get("email", "").strip().lower()
     password = data.get("password")
-    confirm_password = data.get("confirm_password")
     if not email or not password:
         return jsonify({"error": "Missing fields"}), 400
 
