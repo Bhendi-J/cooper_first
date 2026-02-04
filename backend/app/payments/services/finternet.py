@@ -90,7 +90,8 @@ class FinternetService:
     def _headers(self) -> Dict[str, str]:
         """Get request headers with API key authentication."""
         return {
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-API-Key": self.api_key
         }
     
     def _request(self, method: str, endpoint: str, **kwargs) -> Dict[str, Any]:
@@ -107,8 +108,6 @@ class FinternetService:
         """
         url = f"{self.base_url}{endpoint}"
         kwargs["headers"] = self._headers()
-        # Use HTTP Basic Auth (like Stripe) - API key as username, empty password
-        kwargs["auth"] = (self.api_key, "")
         
         try:
             response = requests.request(method, url, **kwargs)
