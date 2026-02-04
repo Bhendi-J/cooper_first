@@ -131,32 +131,32 @@ export const eventsAPI = {
   // Create a new event
   create: (data: CreateEventData) =>
     api.post<{ event: Event }>('/events/', data),
-  
+
   // List all events for the current user
   list: () => api.get<{ events: Event[] }>('/events/'),
-  
+
   // Get a single event by ID
   get: (id: string) => api.get<{ event: Event }>(`/events/${id}`),
-  
+
   // Join an event by event ID (deprecated, use joinByCode instead)
   join: (id: string) => api.post<{ message: string }>(`/events/${id}/join`),
-  
+
   // Get event preview by invite code (public)
   getByInviteCode: (code: string) =>
     api.get<{ event: Partial<Event> & { creator_name: string; participant_count: number } }>(
       `/events/join/${code}`
     ),
-  
+
   // Join an event using invite code
   joinByCode: (code: string) =>
     api.post<{ message: string; event_id: string; event_name: string }>(
       `/events/join/${code}`
     ),
-  
+
   // Deposit money to an event
   deposit: (id: string, amount: number) =>
     api.post<{ message: string; amount: number }>(`/events/${id}/deposit`, { amount }),
-  
+
   // Get invite link info
   getInviteLink: (id: string) =>
     api.get<{
@@ -166,13 +166,16 @@ export const eventsAPI = {
       invite_enabled: boolean;
       qr_data: string;
     }>(`/events/${id}/invite-link`),
-  
+
   // Toggle or regenerate invite link
   updateInviteLink: (id: string, data: { enabled?: boolean; regenerate?: boolean }) =>
     api.put<{ invite_code: string; invite_enabled: boolean; invite_url: string }>(
       `/events/${id}/invite-link`,
       data
     ),
+
+  // Alias for get (some components use getById)
+  getById: (id: string) => api.get<Event>(`/events/${id}`),
 };
 
 // =====================
@@ -192,18 +195,18 @@ export const expensesAPI = {
       '/expenses/',
       data
     ),
-  
+
   // Get all expenses for an event
   getByEvent: (eventId: string) =>
     api.get<{ expenses: Expense[]; merkle_root: string }>(`/expenses/event/${eventId}`),
-  
+
   // Verify an expense
   verify: (id: string, proof?: string[]) =>
     api.post<{ valid: boolean; expense_hash?: string; error?: string }>(
       `/expenses/${id}/verify`,
       proof ? { proof } : {}
     ),
-  
+
   // Get expense categories
   getCategories: () => api.get<{ categories: Category[] }>('/expenses/categories'),
 };
@@ -214,7 +217,7 @@ export const expensesAPI = {
 export const usersAPI = {
   // Get current user's profile
   getProfile: () => api.get<User>('/users/profile'),
-  
+
   // Get user's summary stats
   getSummary: () => api.get<{ events: number; expenses: number }>('/users/summary'),
 };
@@ -226,7 +229,7 @@ export const walletsAPI = {
   // Get wallet balance for a user
   getBalance: (userId: string) =>
     api.get<{ user_id: string; balance: number }>(`/wallets/balance/${userId}`),
-  
+
   // Deposit to wallet
   deposit: (data: { amount: number; user_id?: string }) =>
     api.post<{ status: string; data: any }>('/wallets/deposit', data),
@@ -244,10 +247,55 @@ export const dashboardsAPI = {
 // =====================
 // SETTLEMENTS API
 // =====================
+export interface Balance {
+  user_id: string;
+  username: string;
+  email: string;
+  balance: number;
+  total_spent: number;
+}
+
+export interface Debt {
+  from_user: string;
+  from_username: string;
+  to_user: string;
+  to_username: string;
+  amount: number;
+}
+
+export interface Settlement {
+  _id: string;
+  event_id: string;
+  from_user_id: string;
+  from_username: string;
+  to_user_id: string;
+  to_username: string;
+  amount: number;
+  payment_method: string;
+  status: string;
+  created_at: string;
+}
+
 export const settlementsAPI = {
+  // Get balances for all participants in an event
+  getBalances: (eventId: string) =>
+    api.get<{ balances: Balance[] }>(`/settlements/balances/${eventId}`),
+
+  // Get calculated debts (who owes whom)
+  getDebts: (eventId: string) =>
+    api.get<{ debts: Debt[]; total_owed: number }>(`/settlements/debts/${eventId}`),
+
+  // Record a settlement payment
+  settle: (data: { event_id: string; from_user_id: string; to_user_id: string; amount: number; payment_method?: string }) =>
+    api.post<{ settlement: Settlement }>('/settlements/settle', data),
+
+  // Get settlement history for an event
+  getHistory: (eventId: string) =>
+    api.get<{ settlements: Settlement[] }>(`/settlements/history/${eventId}`),
+
   // Finalize settlements for an event
   finalize: (eventId: string) =>
-    api.post<{ event_id: string; status: string }>(`/settlements/finalize/${eventId}`),
+    api.post<{ event_id: string; status: string; message?: string }>(`/settlements/finalize/${eventId}`),
 };
 
 // =====================
@@ -257,7 +305,7 @@ export const paymentsAPI = {
   // Create a payment intent
   createIntent: (data: { amount: number; description?: string }) =>
     api.post<{ status: string; data: any }>('/payments/intent', data),
-  
+
   // Get payment intent by ID
   getIntent: (intentId: string) =>
     api.get<{ id: string; status: string }>(`/payments/intent/${intentId}`),
