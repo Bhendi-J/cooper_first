@@ -153,15 +153,10 @@ export const eventsAPI = {
       `/events/join/${code}`
     ),
 
-  // Deposit money to an event
-  deposit: (id: string, amount: number) =>
-    api.post<{ message: string; amount: number }>(`/events/${id}/deposit`, { amount }),
-
-  
   // Deposit money to an event (direct mode)
   deposit: (id: string, amount: number) =>
     api.post<{ message: string; amount: number }>(`/events/${id}/deposit`, { amount }),
-  
+
   // Deposit money via Finternet (returns payment URL)
   depositWithFinternet: (id: string, amount: number, currency = 'USDC') =>
     api.post<{
@@ -171,7 +166,7 @@ export const eventsAPI = {
       finternet_id: string;
       amount: number;
     }>(`/events/${id}/deposit`, { amount, currency, use_finternet: true }),
-  
+
   // Get invite link info
   getInviteLink: (id: string) =>
     api.get<{
@@ -262,7 +257,7 @@ export const dashboardsAPI = {
   // Get dashboard summary for a user
   getSummary: (userId: string) =>
     api.get<{ user_id: string; summary: any }>(`/dashboards/summary/${userId}`),
-  
+
   // Get recent activity for current user
   getRecentActivity: (limit = 5) =>
     api.get<{ activities: RecentActivity[] }>(`/dashboards/recent-activity?limit=${limit}`),
@@ -339,27 +334,6 @@ export interface Settlement {
   created_at: string;
 }
 
-export const settlementsAPI = {
-  // Get balances for all participants in an event
-  getBalances: (eventId: string) =>
-    api.get<{ balances: Balance[] }>(`/settlements/balances/${eventId}`),
-
-  // Get calculated debts (who owes whom)
-  getDebts: (eventId: string) =>
-    api.get<{ debts: Debt[]; total_owed: number }>(`/settlements/debts/${eventId}`),
-
-  // Record a settlement payment
-  settle: (data: { event_id: string; from_user_id: string; to_user_id: string; amount: number; payment_method?: string }) =>
-    api.post<{ settlement: Settlement }>('/settlements/settle', data),
-
-  // Get settlement history for an event
-  getHistory: (eventId: string) =>
-    api.get<{ settlements: Settlement[] }>(`/settlements/history/${eventId}`),
-
-  // Finalize settlements for an event
-  finalize: (eventId: string) =>
-    api.post<{ event_id: string; status: string; message?: string }>(`/settlements/finalize/${eventId}`),
-
 export interface SettlementParticipant {
   user_id: string;
   user_name: string;
@@ -392,6 +366,22 @@ export interface Refund {
 }
 
 export const settlementsAPI = {
+  // Get balances for all participants in an event
+  getBalances: (eventId: string) =>
+    api.get<{ balances: Balance[] }>(`/settlements/balances/${eventId}`),
+
+  // Get calculated debts (who owes whom)
+  getDebts: (eventId: string) =>
+    api.get<{ debts: Debt[]; total_owed: number }>(`/settlements/debts/${eventId}`),
+
+  // Record a settlement payment
+  settle: (data: { event_id: string; from_user_id: string; to_user_id: string; amount: number; payment_method?: string }) =>
+    api.post<{ settlement: Settlement }>('/settlements/settle', data),
+
+  // Get settlement history for an event
+  getHistory: (eventId: string) =>
+    api.get<{ settlements: Settlement[] }>(`/settlements/history/${eventId}`),
+
   // Finalize an event and enable refunds
   finalize: (eventId: string) =>
     api.post<{
@@ -399,12 +389,13 @@ export const settlementsAPI = {
       status: string;
       settlements: SettlementParticipant[];
       total_refundable: number;
+      message?: string;
     }>(`/settlements/finalize/${eventId}`),
-  
+
   // Get settlement summary for an event
   getSummary: (eventId: string) =>
     api.get<SettlementSummary>(`/settlements/${eventId}/summary`),
-  
+
   // Request refund for remaining balance
   requestRefund: (eventId: string, walletAddress?: string, useFinternet = true) =>
     api.post<{
@@ -418,7 +409,7 @@ export const settlementsAPI = {
       wallet_address: walletAddress,
       use_finternet: useFinternet,
     }),
-  
+
   // Confirm refund after Finternet payment
   confirmRefund: (eventId: string, refundId: string, signature?: string, payerAddress?: string) =>
     api.post<{
@@ -430,7 +421,7 @@ export const settlementsAPI = {
       signature,
       payer_address: payerAddress,
     }),
-  
+
   // Get user's refund history
   getRefunds: () =>
     api.get<{ refunds: Refund[] }>('/settlements/refunds'),
@@ -579,47 +570,42 @@ export interface DisputeData {
 }
 
 export const paymentsAPI = {
-  // Create a payment intent
-  createIntent: (data: { amount: number; description?: string }) =>
-    api.post<{ status: string; data: any }>('/payments/intent', data),
-
-  // Get payment intent by ID
   // Create a new payment intent
   createIntent: (data: CreatePaymentIntentData) =>
     api.post<CreatePaymentIntentResponse>('/payments/intent', data),
-  
+
   // Get payment intent by ID (Finternet ID or local MongoDB ID)
   getIntent: (intentId: string) =>
     api.get<GetPaymentIntentResponse>(`/payments/intent/${intentId}`),
-  
+
   // Confirm payment with wallet signature
   confirmIntent: (intentId: string, data: ConfirmPaymentData) =>
     api.post<ConfirmPaymentResponse>(`/payments/intent/${intentId}/confirm`, data),
-  
+
   // Cancel a payment intent
   cancelIntent: (intentId: string) =>
     api.post<{ intent: PaymentIntent; status: 'CANCELLED' }>(`/payments/intent/${intentId}/cancel`),
-  
+
   // Get pending payments for current user
   getPending: () =>
     api.get<{ pending_payments: PendingPayment[] }>('/payments/pending'),
-  
+
   // Get payment history for current user
   getHistory: (limit = 20) =>
     api.get<{ payments: LocalPaymentRecord[] }>(`/payments/history?limit=${limit}`),
-  
+
   // Get escrow details for conditional payment
   getEscrow: (intentId: string) =>
     api.get<{ escrow: ConditionalPayment }>(`/payments/intent/${intentId}/escrow`),
-  
+
   // Submit delivery proof for conditional payment
   submitDeliveryProof: (intentId: string, data: DeliveryProofData) =>
     api.post<{ delivery_proof: ConditionalPayment }>(`/payments/intent/${intentId}/escrow/delivery-proof`, data),
-  
+
   // Raise a dispute for conditional payment
   raiseDispute: (intentId: string, data: DisputeData) =>
     api.post<{ dispute: ConditionalPayment }>(`/payments/intent/${intentId}/escrow/dispute`, data),
-  
+
   // Confirm deposit payment
   confirmDeposit: (intentId: string, signature?: string, payerAddress?: string) =>
     api.post<{

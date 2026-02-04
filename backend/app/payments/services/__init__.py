@@ -1,5 +1,5 @@
 """Payments services package."""
 
-from .finnternet import create_payment_intent
+from .finternet import FinternetService, create_payment_intent, fetch_intent, calculate_split
 
-__all__ = ["create_payment_intent"]
+__all__ = ["FinternetService", "create_payment_intent", "fetch_intent", "calculate_split"]
