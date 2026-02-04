@@ -1,59 +1,35 @@
 from flask import Flask
-from flask_bcrypt import Bcrypt
-from flask_login import LoginManager
-from flask_mail import Mail
-from flask_cors import CORS
-
 from app.config import Config
-from app.extensions import init_mongo
+from app.extensions import mongo, jwt, cors
 
-bcrypt = Bcrypt()
-mail = Mail()
-login_manager = LoginManager()
-
-# Disable redirect-based behavior (important for APIs)
-login_manager.login_view = None
-login_manager.login_message = None
-
-def create_app(config_class=Config):
+def create_app():
     app = Flask(__name__)
-    app.config.from_object(config_class)
+    app.config.from_object(Config)
     
-    # Disable strict slashes to prevent 308 redirects that break CORS preflight
-    app.url_map.strict_slashes = False
-
-    # Allow React to talk to Flask
-    CORS(
-        app,
-        supports_credentials=True,
-        resources={r"/*": {"origins": ["http://localhost:5173", "http://localhost:8080"]}}
-    )
-    # Init extensions
-    init_mongo(app)
-    bcrypt.init_app(app)
-    mail.init_app(app)
-    login_manager.init_app(app)
-
-    # Register API blueprints
-    from app.users.routes import users
-    from app.search.routes import search
-    from app.auth.routes import auth
-    from app.posts.routes import posts
+    # Initialize extensions
+    mongo.init_app(app)
+    jwt.init_app(app)
+    cors.init_app(app)
     
-    app.register_blueprint(posts, url_prefix="/api/posts")
-    app.register_blueprint(auth, url_prefix="/api/auth")
-    app.register_blueprint(users, url_prefix="/api/users")
-    app.register_blueprint(search, url_prefix="/api/search")
-
+    # Register blueprints
+    from app.auth.routes import auth_bp
+    from app.users.routes import users_bp
+    from app.events.routes import events_bp
+    from app.wallets.routes import wallets_bp
+    from app.expenses.routes import expenses_bp
+    from app.payments.routes import payments_bp
+    from app.settlements.routes import settlements_bp
+    from app.dashboards.routes import dashboards_bp
+    from app.ai.routes import ai_bp
+    
+    app.register_blueprint(auth_bp, url_prefix='/api/v1/auth')
+    app.register_blueprint(users_bp, url_prefix='/api/v1/users')
+    app.register_blueprint(events_bp, url_prefix='/api/v1/events')
+    app.register_blueprint(wallets_bp, url_prefix='/api/v1/wallets')
+    app.register_blueprint(expenses_bp, url_prefix='/api/v1/expenses')
+    app.register_blueprint(payments_bp, url_prefix='/api/v1/payments')
+    app.register_blueprint(settlements_bp, url_prefix='/api/v1/settlements')
+    app.register_blueprint(dashboards_bp, url_prefix='/api/v1/dashboards')
+    app.register_blueprint(ai_bp, url_prefix='/api/v1/ai')
+    
     return app
-
-from app.users.model import User
-
-@login_manager.user_loader
-def load_user(user_id):
-    print(f"[USER_LOADER] Loading user with id: {user_id}")
-    user_dict = User.find_by_id(user_id)
-    print(f"[USER_LOADER] Found user_dict: {user_dict}")
-    if user_dict:
-        return User(user_dict)
-    return None

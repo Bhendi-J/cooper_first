@@ -1,64 +1,82 @@
-from flask import Blueprint, request, jsonify, session
-from flask_login import login_user, logout_user, login_required, current_user
+from flask import Blueprint, request, jsonify
+from flask_jwt_extended import create_access_token, jwt_required, get_jwt_identity
+from bcrypt import hashpw, gensalt, checkpw
+from app.extensions import mongo
+from datetime import datetime
+from bson import ObjectId
 
-from app import bcrypt
-from app.extensions import db
-from app.users.model import User
+auth_bp = Blueprint('auth', __name__)
 
-auth = Blueprint("auth", __name__)
-
-
-@auth.route("/login", methods=["POST"])
-def login():
-    data = request.json
-    email = data.get("email", "").strip().lower()
-    password = data.get("password")
-
-    if not email or not password:
-        return jsonify({"error": "Missing email or password"}), 400
-
-    user_data = db.users.find_one({"email": email})
-    if not user_data:
-        return jsonify({"error": "Invalid credentials"}), 401
-
-    if not bcrypt.check_password_hash(user_data["password"], password):
-        return jsonify({"error": "Invalid credentials"}), 401
-
-    user = User(user_data)
-    login_user(user, remember=True)
+@auth_bp.route('/register', methods=['POST'])
+def register():
+    data = request.get_json()
     
-    # Debug: Print session info
-    print(f"[LOGIN] User logged in: {email}")
-    print(f"[LOGIN] Session: {dict(session)}")
-
+    if not data.get('email') or not data.get('password') or not data.get('name'):
+        return jsonify({"error": "Missing required fields"}), 400
+    
+    if mongo.db.users.find_one({"email": data['email']}):
+        return jsonify({"error": "User already exists"}), 409
+    
+    password_hash = hashpw(data['password'].encode('utf-8'), gensalt())
+    
+    user = {
+        "name": data['name'],
+        "email": data['email'],
+        "password_hash": password_hash,
+        "phone": data.get('phone'),
+        "wallet_address": None,
+        "created_at": datetime.utcnow(),
+        "updated_at": datetime.utcnow()
+    }
+    
+    result = mongo.db.users.insert_one(user)
+    user['_id'] = str(result.inserted_id)
+    del user['password_hash']
+    
+    access_token = create_access_token(identity=user['_id'])
+    
     return jsonify({
-        "message": "Login successful",
+        "access_token": access_token,
+        "user": user
+    }), 201
+
+@auth_bp.route('/login', methods=['POST'])
+def login():
+    data = request.get_json()
+    
+    user = mongo.db.users.find_one({"email": data.get('email')})
+    if not user:
+        return jsonify({"error": "Invalid credentials"}), 401
+    
+    if not checkpw(data['password'].encode('utf-8'), user['password_hash']):
+        return jsonify({"error": "Invalid credentials"}), 401
+    
+    access_token = create_access_token(identity=str(user['_id']))
+    
+    return jsonify({
+        "access_token": access_token,
         "user": {
-            "id": str(user_data["_id"]),
-            "email": user_data["email"]
+            "_id": str(user['_id']),
+            "name": user['name'],
+            "email": user['email'],
+            "phone": user.get('phone'),
+            "wallet_address": user.get('wallet_address')
         }
     })
 
-
-@auth.route("/logout", methods=["POST"])
-@login_required
-def logout():
-    logout_user()
-    return jsonify({"message": "Logged out successfully"})
-
-
-@auth.route("/me", methods=["GET"])
+@auth_bp.route('/me', methods=['GET'])
+@jwt_required()
 def get_current_user():
-    # Debug: Print session and auth info
-    print(f"[ME] Session: {dict(session)}")
-    print(f"[ME] Is authenticated: {current_user.is_authenticated}")
-    print(f"[ME] Request cookies: {request.cookies}")
+    user_id = get_jwt_identity()
+    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
     
-    if current_user.is_authenticated:
-        return jsonify({
-            "user": {
-                "id": current_user.id,
-                "email": current_user.email
-            }
-        })
-    return jsonify({"user": None}), 401
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    return jsonify({
+        "_id": str(user['_id']),
+        "name": user['name'],
+        "email": user['email'],
+        "phone": user.get('phone'),
+        "wallet_address": user.get('wallet_address')
+    })

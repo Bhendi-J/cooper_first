@@ -1,62 +1,46 @@
 from flask import Blueprint, request, jsonify
-from bson.objectid import ObjectId
-from bson.errors import InvalidId
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from bson import ObjectId
+from app.extensions import mongo
+from datetime import datetime
 
-from app import bcrypt
-from app.extensions import db
+users_bp = Blueprint('users', __name__)
 
-users = Blueprint("users", __name__)
-
-# REGISTER USER
-@users.route("/", methods=["POST"])
-def register():
-    data = request.json
-    email = data.get("email", "").strip().lower()
-    password = data.get("password")
-    if not email or not password:
-        return jsonify({"error": "Missing fields"}), 400
-
-    if db.users.find_one({"email": email}):
-        return jsonify({"error": "User already exists"}), 409
-
-    hashed_pw = bcrypt.generate_password_hash(password).decode("utf-8")
-
-    result = db.users.insert_one({
-        "email": email,
-        "password": hashed_pw
+@users_bp.route('/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    user_id = get_jwt_identity()
+    user = mongo.db.users.find_one({"_id": ObjectId(user_id)})
+    
+    if not user:
+        return jsonify({"error": "User not found"}), 404
+    
+    return jsonify({
+        "_id": str(user['_id']),
+        "name": user['name'],
+        "email": user['email'],
+        "phone": user.get('phone'),
+        "wallet_address": user.get('wallet_address'),
+        "created_at": user.get('created_at')
     })
 
-    return jsonify({
-        "message": "User registered",
-        "id": str(result.inserted_id)
-    }), 201
-
-
-# GET ALL USERS
-@users.route("/all", methods=["GET"])
-def get_all_users():
-    users_list = [
-        {
-            "id": str(user["_id"]),
-            "email": user["email"]
-        }
-        for user in db.users.find({}, {"email": 1})
-    ]
-    return jsonify(users_list)
-
-
-# GET SINGLE USER
-@users.route("/<user_id>", methods=["GET"])
-def get_user(user_id):
-    try:
-        user = db.users.find_one({"_id": ObjectId(user_id)}, {"email": 1})
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-
-        return jsonify({
-            "id": str(user["_id"]),
-            "email": user["email"]
-        })
-
-    except InvalidId:
-        return jsonify({"error": "Invalid ID"}), 400
+@users_bp.route('/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    user_id = get_jwt_identity()
+    data = request.get_json()
+    
+    update_data = {}
+    if 'name' in data:
+        update_data['name'] = data['name']
+    if 'phone' in data:
+        update_data['phone'] = data['phone']
+    
+    if update_data:
+        update_data['updated_at'] = datetime.utcnow()
+        mongo.db.users.update_one(
+            {"_id": ObjectId(user_id)},
+            {"$set": update_data}
+        )
+    
+    return jsonify({"message": "Profile updated successfully"})
