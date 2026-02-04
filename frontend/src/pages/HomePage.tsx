@@ -7,9 +7,9 @@ export default function HomePage() {
   return (
     <div className="min-h-screen flex items-center justify-center">
       <div className="text-center">
-        <h1 className="text-4xl font-bold mb-4">🚀 Hackathon Starter</h1>
+        <h1 className="text-4xl font-bold mb-4">🚀 Cooper</h1>
         <p className="text-muted-foreground mb-8">
-          Ready to build something amazing
+          Welcome to Cooper
         </p>
 
         {user ? (
