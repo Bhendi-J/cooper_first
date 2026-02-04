@@ -1,7 +1,24 @@
-"""Common enums and constants."""
 from enum import Enum
 
+class EventStatus(str, Enum):
+    ACTIVE = "active"
+    COMPLETED = "completed"
+    CANCELLED = "cancelled"
 
-class ExpenseStatus(Enum):
+class ParticipantStatus(str, Enum):
+    INVITED = "invited"
+    ACTIVE = "active"
+    LEFT = "left"
+
+class ExpenseType(str, Enum):
+    EQUAL_SPLIT = "equal_split"
+    PERCENTAGE = "percentage"
+    CUSTOM = "custom"
+
+class PaymentStatus(str, Enum):
     PENDING = "pending"
-    SETTLED = "settled"
+    PROCESSING = "processing"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+

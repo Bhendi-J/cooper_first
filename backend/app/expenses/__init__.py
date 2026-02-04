@@ -1,5 +1,5 @@
 """Expenses package."""
 
-from .routes import bp
+from .routes import expenses_bp
 
-__all__ = ["bp"]
+__all__ = ["expenses_bp"]

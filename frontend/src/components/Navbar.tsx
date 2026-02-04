@@ -21,6 +21,9 @@ export function Navbar() {
 
           {/* Right side */}
           <div className="flex items-center gap-4">
+            <Link to="/api-test" className="text-sm hover:underline text-blue-600">
+              API Test
+            </Link>
             {user ? (
               <>
                 <span className="text-sm text-muted-foreground">

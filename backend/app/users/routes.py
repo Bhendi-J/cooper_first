@@ -1,62 +1,32 @@
-from flask import Blueprint, request, jsonify
-from bson.objectid import ObjectId
-from bson.errors import InvalidId
+from flask import Blueprint, jsonify
+from flask_jwt_extended import jwt_required, get_jwt_identity
+from bson import ObjectId
+from app.extensions import db as mongo
 
-from app import bcrypt
-from app.extensions import db
+users_bp = Blueprint("users", __name__)
 
-users = Blueprint("users", __name__)
+@users_bp.route("/profile", methods=["GET"])
+@jwt_required()
+def profile():
+    uid = get_jwt_identity()
+    user = mongo.users.find_one({"_id": ObjectId(uid)}, {"password_hash": 0})
 
-# REGISTER USER
-@users.route("/", methods=["POST"])
-def register():
-    data = request.json
-    email = data.get("email", "").strip().lower()
-    password = data.get("password")
-    if not email or not password:
-        return jsonify({"error": "Missing fields"}), 400
+    if not user:
+        return jsonify({"error": "User not found"}), 404
 
-    if db.users.find_one({"email": email}):
-        return jsonify({"error": "User already exists"}), 409
+    user["_id"] = str(user["_id"])
+    return jsonify(user)
 
-    hashed_pw = bcrypt.generate_password_hash(password).decode("utf-8")
 
-    result = db.users.insert_one({
-        "email": email,
-        "password": hashed_pw
-    })
+@users_bp.route("/summary", methods=["GET"])
+@jwt_required()
+def summary():
+    uid = get_jwt_identity()
+
+    events = mongo.participants.count_documents({"user_id": uid})
+    expenses = mongo.expenses.count_documents({"payer_id": uid})
 
     return jsonify({
-        "message": "User registered",
-        "id": str(result.inserted_id)
-    }), 201
-
-
-# GET ALL USERS
-@users.route("/all", methods=["GET"])
-def get_all_users():
-    users_list = [
-        {
-            "id": str(user["_id"]),
-            "email": user["email"]
-        }
-        for user in db.users.find({}, {"email": 1})
-    ]
-    return jsonify(users_list)
-
-
-# GET SINGLE USER
-@users.route("/<user_id>", methods=["GET"])
-def get_user(user_id):
-    try:
-        user = db.users.find_one({"_id": ObjectId(user_id)}, {"email": 1})
-        if not user:
-            return jsonify({"error": "User not found"}), 404
-
-        return jsonify({
-            "id": str(user["_id"]),
-            "email": user["email"]
-        })
-
-    except InvalidId:
-        return jsonify({"error": "Invalid ID"}), 400
+        "events": events,
+        "expenses": expenses
+    })

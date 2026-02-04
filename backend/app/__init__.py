@@ -3,6 +3,7 @@ from flask_bcrypt import Bcrypt
 from flask_login import LoginManager
 from flask_mail import Mail
 from flask_cors import CORS
+from flask_jwt_extended import JWTManager
 
 from app.config import Config
 from app.extensions import init_mongo
@@ -10,6 +11,7 @@ from app.extensions import init_mongo
 bcrypt = Bcrypt()
 mail = Mail()
 login_manager = LoginManager()
+jwt = JWTManager()
 
 # Disable redirect-based behavior (important for APIs)
 login_manager.login_view = None
@@ -33,17 +35,19 @@ def create_app(config_class=Config):
     bcrypt.init_app(app)
     mail.init_app(app)
     login_manager.init_app(app)
+    jwt.init_app(app)
 
     # Register API blueprints
-    from app.users.routes import users
-    from app.search.routes import search
-    from app.auth.routes import auth
-    from app.posts.routes import posts
-    
-    app.register_blueprint(posts, url_prefix="/api/posts")
-    app.register_blueprint(auth, url_prefix="/api/auth")
-    app.register_blueprint(users, url_prefix="/api/users")
-    app.register_blueprint(search, url_prefix="/api/search")
+    # Register blueprints
+    from app.auth.routes import auth_bp
+    from app.users.routes import users_bp
+    from app.events.routes import events_bp
+    from app.expenses.routes import expenses_bp
+
+    app.register_blueprint(expenses_bp, url_prefix='/api/v1/expenses')
+    app.register_blueprint(events_bp, url_prefix='/api/v1/events')
+    app.register_blueprint(auth_bp, url_prefix='/api/v1/auth')
+    app.register_blueprint(users_bp, url_prefix='/api/v1/users')
 
     return app
 
