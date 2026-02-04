@@ -36,7 +36,7 @@ export default function DashboardPage() {
         <div className="bg-card border border-border rounded-lg p-6">
           <h2 className="text-xl font-semibold mb-4">Your Content</h2>
           <p className="text-muted-foreground">
-            Start building your hackathon project here!
+            Start building your  project here!
           </p>
         </div>
 

@@ -13,7 +13,7 @@ def init_mongo(app):
     _db = _client.get_default_database()
     if _db is None:
         # Fallback: extract database name from URI or use default
-        _db = _client["prepify"]
+        _db = _client["hacks"]
     
     print(f"[MongoDB] Connected to database: {_db.name}")
 
