@@ -11,15 +11,17 @@ class FinternetService:
         }
     
     def create_payment_intent(self, amount, currency='USD', description='', 
-                            settlement_method='OFF_RAMP_MOCK', settlement_destination='test_account'):
+                            payment_type='CONDITIONAL', settlement_method='OFF_RAMP_MOCK', 
+                            settlement_destination='test_account'):
         """Create a payment intent for collecting funds from users"""
         url = f"{self.base_url}/payment-intents"
         payload = {
-            "amount": amount,
+            "amount": str(amount),
             "currency": currency,
+            "type": payment_type,
             "description": description,
-            "settlement_method": settlement_method,
-            "settlement_destination": settlement_destination
+            "settlementMethod": settlement_method,
+            "settlementDestination": settlement_destination
         }
         response = requests.post(url, json=payload, headers=self.headers)
         return response.json()

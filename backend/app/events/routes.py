@@ -86,6 +86,7 @@ def get_event(event_id):
     for p in participants:
         p['_id'] = str(p['_id'])
         p['user_id'] = str(p['user_id'])
+        p['event_id'] = str(p['event_id'])
         user = mongo.db.users.find_one({"_id": ObjectId(p['user_id'])})
         p['user_name'] = user['name'] if user else 'Unknown'
     

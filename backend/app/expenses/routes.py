@@ -3,7 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from bson import ObjectId
 from datetime import datetime
 from app.extensions import mongo
-from app.utils.merkle_tree import EventMerkleTree
+from app.utils.merkle_tree import EventMerkleTree, MerkleTree
 from app.payments.services.finternet import FinternetService
 
 expenses_bp = Blueprint('expenses', __name__)
@@ -54,6 +54,10 @@ def add_expense():
     
     result = mongo.db.expenses.insert_one(expense)
     expense['_id'] = str(result.inserted_id)
+    expense['event_id'] = str(expense['event_id'])
+    expense['payer_id'] = str(expense['payer_id'])
+    if expense['category_id']:
+        expense['category_id'] = str(expense['category_id'])
     
     # USP: Update Merkle tree
     all_expenses = list(mongo.db.expenses.find({"event_id": event_id}))
@@ -115,6 +119,8 @@ def get_event_expenses(event_id):
         expense['_id'] = str(expense['_id'])
         expense['event_id'] = str(expense['event_id'])
         expense['payer_id'] = str(expense['payer_id'])
+        if expense.get('category_id'):
+            expense['category_id'] = str(expense['category_id'])
         
         # USP: Add Merkle proof for each expense
         leaf = EventMerkleTree.expense_to_leaf(expense)
@@ -147,7 +153,7 @@ def verify_expense(expense_id):
     leaf = EventMerkleTree.expense_to_leaf(expense)
     proof = data.get('proof', [])
     
-    merkle_tree = EventMerkleTree()
+    merkle_tree = MerkleTree()
     is_valid = merkle_tree.verify_proof(leaf, proof, stored_root)
     
     return jsonify({
