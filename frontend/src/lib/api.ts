@@ -219,6 +219,24 @@ export const expensesAPI = {
 
   // Get expense categories
   getCategories: () => api.get<{ categories: Category[] }>('/expenses/categories'),
+
+  // Scan receipt using Gemini AI
+  scanReceipt: (file: File) => {
+    const formData = new FormData();
+    formData.append('receipt', file);
+    return api.post<{
+      amount?: number;
+      description?: string;
+      date?: string;
+      currency?: string;
+      items?: any[];
+      error?: string;
+    }>('/expenses/scan-receipt', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+  },
 };
 
 // =====================

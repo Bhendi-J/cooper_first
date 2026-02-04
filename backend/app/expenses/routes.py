@@ -8,8 +8,32 @@ from datetime import datetime
 from app.extensions import db as mongo
 from app.utils.merkle_tree import EventMerkleTree
 from app.payments.services.finternet import FinternetService
+from app.services.gemini_ocr import GeminiOCRService
+from app.payments.models import SplitPaymentDB
 
 expenses_bp = Blueprint("expenses", __name__)
+
+@expenses_bp.route("/scan-receipt", methods=["POST"])
+@jwt_required()
+def scan_receipt():
+    if 'receipt' not in request.files:
+        return jsonify({"error": "No receipt file provided"}), 400
+    
+    file = request.files['receipt']
+    if file.filename == '':
+        return jsonify({"error": "No selected file"}), 400
+
+    try:
+        image_bytes = file.read()
+        ocr_service = GeminiOCRService()
+        result = ocr_service.parse_receipt(image_bytes)
+        
+        if "error" in result:
+             return jsonify(result), 400
+             
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"Failed to scan receipt: {str(e)}"}), 500
 
 @expenses_bp.route("/", methods=["POST"])
 @jwt_required()
@@ -137,6 +161,12 @@ def add_expense():
         "expense_id": result.inserted_id,
         "created_at": datetime.utcnow()
     })
+
+    # Save split payments to database for tracking
+    try:
+        SplitPaymentDB.create_for_expense(str(result.inserted_id), splits, payment_intents)
+    except Exception as e:
+        print(f"Failed to save split payments: {e}")
 
     return jsonify({
         "expense": expense,

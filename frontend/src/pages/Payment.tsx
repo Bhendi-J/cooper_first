@@ -35,6 +35,7 @@ export default function Payment() {
                 amount,
                 currency: 'USD',
                 description,
+                returnUrl: `${window.location.origin}/payment/callback`,
             });
 
             setIntentId(intent.id);

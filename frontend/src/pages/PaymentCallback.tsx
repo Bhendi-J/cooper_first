@@ -124,7 +124,17 @@ export default function PaymentCallback() {
             clearInterval(interval);
             clearTimeout(timeout);
         };
-    }, [intentId, pollCount]);
+    }, [intentId, status, toast]);
+
+    // Auto-redirect on success
+    useEffect(() => {
+        if (status === 'success') {
+            const timer = setTimeout(() => {
+                navigate(returnUrl);
+            }, 3000); // Redirect after 3 seconds
+            return () => clearTimeout(timer);
+        }
+    }, [status, navigate, returnUrl]);
 
     const handleRetry = () => {
         navigate('/payment');
@@ -241,6 +251,9 @@ export default function PaymentCallback() {
                                     Continue
                                     <ArrowRight className="w-5 h-5 ml-2" />
                                 </Button>
+                                <p className="text-xs text-muted-foreground mt-4">
+                                    Redirecting you automatically in 3 seconds...
+                                </p>
                             </>
                         )}
 
@@ -277,6 +290,6 @@ export default function PaymentCallback() {
                     </div>
                 </motion.div>
             </main>
-        </div>
+        </div >
     );
 }

@@ -2,6 +2,7 @@
 from flask import Blueprint, request, jsonify
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from app.payments.services.finternet import FinternetService
+from app.payments.models import SplitPaymentDB
 import os
 
 bp = Blueprint("payments", __name__)
@@ -37,13 +38,15 @@ def create_intent():
     
     currency = data.get("currency", "USDC")
     description = data.get("description", "Cooper payment")
+    return_url = data.get("returnUrl", "http://localhost:5173/payment/callback")
     
     try:
         finternet = FinternetService()
         result = finternet.create_payment_intent(
             amount=str(amount),
             currency=currency,
-            description=description
+            description=description,
+            return_url=return_url
         )
         
         # Extract key info for frontend
@@ -94,6 +97,10 @@ def get_intent(intent_id):
             "phases": intent_data.get("phases", [])
         }
         
+        # Sync local DB if paid
+        if intent_data.get("status") in ["SUCCEEDED", "SETTLED", "FINAL"]:
+             SplitPaymentDB.mark_paid_by_intent(intent_id, intent_data.get("transactionHash"))
+        
         return jsonify(response)
         
     except Exception as e:
@@ -131,6 +138,9 @@ def confirm_intent(intent_id):
             "transactionHash": intent_data.get("transactionHash"),
             "phases": intent_data.get("phases", [])
         }
+        
+        # Mark split as paid in our DB
+        SplitPaymentDB.mark_paid_by_intent(intent_id, intent_data.get("transactionHash"))
         
         return jsonify(response)
         
@@ -223,6 +233,9 @@ def simulate_success(intent_id):
             "transactionHash": intent_data.get("transactionHash"),
             "message": "Payment simulated successfully for demo"
         }
+        
+        # Mark split as paid in our DB
+        SplitPaymentDB.mark_paid_by_intent(intent_id, intent_data.get("transactionHash"))
         
         return jsonify(response)
         

@@ -19,6 +19,7 @@ interface CreatePaymentIntentRequest {
   amount: string;
   currency?: string;
   description?: string;
+  returnUrl?: string;
 }
 
 /**

@@ -322,3 +322,22 @@ class SplitPaymentDB:
             update
         )
         return result.modified_count > 0
+
+    @classmethod
+    def mark_paid_by_intent(cls, intent_id: str, tx_hash: str = None) -> bool:
+        """Mark a split payment as paid using the intent ID."""
+        update = {
+            "$set": {
+                "status": "paid",
+                "paid_at": datetime.utcnow(),
+                "updated_at": datetime.utcnow()
+            }
+        }
+        if tx_hash:
+            update["$set"]["transaction_hash"] = tx_hash
+        
+        result = mongo.split_payments.update_one(
+            {"finternet_intent_id": intent_id},
+            update
+        )
+        return result.modified_count > 0

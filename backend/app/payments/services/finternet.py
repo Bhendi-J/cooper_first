@@ -47,9 +47,13 @@ class FinternetService:
         payment_type: str = "DELIVERY_VS_PAYMENT",
         settlement_method: str = "OFF_RAMP_MOCK",
         settlement_destination: str = "bank_account_123",
-        description: Optional[str] = None
+        description: Optional[str] = None,
+        return_url: Optional[str] = None
     ) -> Dict[str, Any]:
         """Create a new payment intent (mocked for demo)."""
+        
+        # Default return URL
+        callback_url = return_url or "http://localhost:5173/payment/callback"
         
         if MOCK_MODE:
             intent_id = f"intent_{uuid.uuid4().hex[:12]}"
