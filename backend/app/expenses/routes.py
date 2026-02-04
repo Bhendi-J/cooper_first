@@ -127,6 +127,17 @@ def add_expense():
                 "intent": intent
             })
 
+    # Log expense activity
+    mongo.activities.insert_one({
+        "type": "expense",
+        "event_id": event_id,
+        "user_id": ObjectId(user_id),
+        "amount": amount,
+        "description": description or "Expense",
+        "expense_id": result.inserted_id,
+        "created_at": datetime.utcnow()
+    })
+
     return jsonify({
         "expense": expense,
         "merkle_root": merkle_root,
