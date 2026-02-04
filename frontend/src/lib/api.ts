@@ -153,9 +153,19 @@ export const eventsAPI = {
       `/events/join/${code}`
     ),
   
-  // Deposit money to an event
+  // Deposit money to an event (direct mode)
   deposit: (id: string, amount: number) =>
     api.post<{ message: string; amount: number }>(`/events/${id}/deposit`, { amount }),
+  
+  // Deposit money via Finternet (returns payment URL)
+  depositWithFinternet: (id: string, amount: number, currency = 'USDC') =>
+    api.post<{
+      message: string;
+      payment_url: string;
+      intent_id: string;
+      finternet_id: string;
+      amount: number;
+    }>(`/events/${id}/deposit`, { amount, currency, use_finternet: true }),
   
   // Get invite link info
   getInviteLink: (id: string) =>
@@ -211,12 +221,69 @@ export const expensesAPI = {
 // =====================
 // USERS API
 // =====================
+export interface UserSummary {
+  events: number;
+  expense_count: number;
+  total_expense_amount: number;
+}
+
 export const usersAPI = {
   // Get current user's profile
   getProfile: () => api.get<User>('/users/profile'),
   
   // Get user's summary stats
-  getSummary: () => api.get<{ events: number; expenses: number }>('/users/summary'),
+  getSummary: () => api.get<UserSummary>('/users/summary'),
+};
+
+// =====================
+// DASHBOARDS API
+// =====================
+export interface RecentActivity {
+  _id: string;
+  type: 'expense' | 'deposit';
+  description: string;
+  amount: number;
+  event_id: string;
+  event_name: string;
+  payer_id: string;
+  payer_name: string;
+  created_at: string;
+}
+
+export const dashboardsAPI = {
+  // Get dashboard summary for a user
+  getSummary: (userId: string) =>
+    api.get<{ user_id: string; summary: any }>(`/dashboards/summary/${userId}`),
+  
+  // Get recent activity for current user
+  getRecentActivity: (limit = 5) =>
+    api.get<{ activities: RecentActivity[] }>(`/dashboards/recent-activity?limit=${limit}`),
+};
+
+// =====================
+// ANALYTICS API
+// =====================
+export interface CategoryTotal {
+  category_id: string;
+  category_name: string;
+  total: number;
+  count: number;
+}
+
+export interface DailyExpense {
+  date: string;
+  total: number;
+  count: number;
+}
+
+export interface AnalyticsOverview {
+  category_totals: CategoryTotal[];
+  daily_expenses: DailyExpense[];
+}
+
+export const analyticsAPI = {
+  // Get analytics overview for current user
+  getOverview: () => api.get<AnalyticsOverview>('/analytics/overview'),
 };
 
 // =====================
@@ -233,32 +300,274 @@ export const walletsAPI = {
 };
 
 // =====================
-// DASHBOARDS API
-// =====================
-export const dashboardsAPI = {
-  // Get dashboard summary for a user
-  getSummary: (userId: string) =>
-    api.get<{ user_id: string; summary: any }>(`/dashboards/summary/${userId}`),
-};
-
-// =====================
 // SETTLEMENTS API
 // =====================
+
+export interface SettlementParticipant {
+  user_id: string;
+  user_name: string;
+  deposited: number;
+  spent: number;
+  balance: number;
+  status: string;
+  refund_pending?: boolean;
+  is_you?: boolean;
+}
+
+export interface SettlementSummary {
+  event_id: string;
+  event_name: string;
+  event_status: string;
+  total_pool: number;
+  total_spent: number;
+  settlements: SettlementParticipant[];
+}
+
+export interface Refund {
+  _id: string;
+  event_id: string;
+  event_name: string;
+  amount: number;
+  status: 'pending' | 'processing' | 'completed';
+  payment_url?: string;
+  created_at: string;
+  completed_at?: string;
+}
+
 export const settlementsAPI = {
-  // Finalize settlements for an event
+  // Finalize an event and enable refunds
   finalize: (eventId: string) =>
-    api.post<{ event_id: string; status: string }>(`/settlements/finalize/${eventId}`),
+    api.post<{
+      event_id: string;
+      status: string;
+      settlements: SettlementParticipant[];
+      total_refundable: number;
+    }>(`/settlements/finalize/${eventId}`),
+  
+  // Get settlement summary for an event
+  getSummary: (eventId: string) =>
+    api.get<SettlementSummary>(`/settlements/${eventId}/summary`),
+  
+  // Request refund for remaining balance
+  requestRefund: (eventId: string, walletAddress?: string, useFinternet = true) =>
+    api.post<{
+      refund_id: string;
+      amount: number;
+      status: string;
+      payment_url?: string;
+      intent_id?: string;
+      finternet_id?: string;
+    }>(`/settlements/${eventId}/refund`, {
+      wallet_address: walletAddress,
+      use_finternet: useFinternet,
+    }),
+  
+  // Confirm refund after Finternet payment
+  confirmRefund: (eventId: string, refundId: string, signature?: string, payerAddress?: string) =>
+    api.post<{
+      refund_id: string;
+      amount: number;
+      status: string;
+    }>(`/settlements/${eventId}/refund/confirm`, {
+      refund_id: refundId,
+      signature,
+      payer_address: payerAddress,
+    }),
+  
+  // Get user's refund history
+  getRefunds: () =>
+    api.get<{ refunds: Refund[] }>('/settlements/refunds'),
 };
 
 // =====================
 // PAYMENTS API
 // =====================
+
+export type PaymentStatus =
+  | 'INITIATED'
+  | 'REQUIRES_SIGNATURE'
+  | 'PROCESSING'
+  | 'SUCCEEDED'
+  | 'SETTLED'
+  | 'FINAL'
+  | 'CANCELLED'
+  | 'FAILED';
+
+export type PaymentType = 'CONDITIONAL' | 'DELIVERY_VS_PAYMENT';
+
+export interface PaymentIntent {
+  id: string;
+  status: PaymentStatus;
+  amount: string;
+  currency: string;
+  type: PaymentType;
+  settlementMethod: string;
+  settlementDestination?: string;
+  description?: string;
+  metadata?: Record<string, unknown>;
+  data?: {
+    paymentUrl?: string;
+    typedData?: EIP712TypedData;
+    transactionHash?: string;
+    settlementStatus?: string;
+  };
+  createdAt: string;
+  updatedAt: string;
+}
+
+export interface EIP712TypedData {
+  domain: {
+    name: string;
+    version: string;
+    chainId: number;
+    verifyingContract: string;
+  };
+  types: Record<string, Array<{ name: string; type: string }>>;
+  primaryType: string;
+  message: Record<string, unknown>;
+}
+
+export interface LocalPaymentRecord {
+  _id: string;
+  finternet_id: string;
+  user_id: string;
+  event_id?: string;
+  expense_id?: string;
+  status: PaymentStatus;
+  amount: string;
+  currency: string;
+  type: PaymentType;
+  payer_address?: string;
+  signature?: string;
+  transaction_hash?: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PendingPayment {
+  _id: string;
+  expense_id: string;
+  user_id: string;
+  amount: number;
+  status: 'pending' | 'paid';
+  expense_description?: string;
+  expense_amount?: number;
+  event_name?: string;
+}
+
+export interface ConditionalPayment {
+  id: string;
+  status: string;
+  escrowAddress?: string;
+  releaseConditions?: {
+    deliveryProofRequired: boolean;
+    disputeWindow: number;
+  };
+  deliveryProof?: {
+    hash: string;
+    uri?: string;
+    submittedAt: string;
+    submittedBy: string;
+  };
+  dispute?: {
+    reason: string;
+    raisedAt: string;
+    raisedBy: string;
+  };
+}
+
+export interface CreatePaymentIntentData {
+  amount: string;
+  currency?: string;
+  description?: string;
+  event_id?: string;
+  expense_id?: string;
+  type?: PaymentType;
+  settlement_method?: 'OFF_RAMP_MOCK' | 'BANK_TRANSFER';
+  settlement_destination?: string;
+}
+
+export interface CreatePaymentIntentResponse {
+  intent: PaymentIntent;
+  payment_url: string;
+  local_id: string;
+}
+
+export interface GetPaymentIntentResponse {
+  intent: PaymentIntent | null;
+  local: LocalPaymentRecord | null;
+  api_error?: { message: string; code: string };
+}
+
+export interface ConfirmPaymentData {
+  signature: string;
+  payer_address: string;
+}
+
+export interface ConfirmPaymentResponse {
+  intent: PaymentIntent;
+  status: PaymentStatus;
+}
+
+export interface DeliveryProofData {
+  proof_hash: string;
+  submitted_by: string;
+  proof_uri?: string;
+}
+
+export interface DisputeData {
+  reason: string;
+  raised_by: string;
+  dispute_window?: string;
+}
+
 export const paymentsAPI = {
-  // Create a payment intent
-  createIntent: (data: { amount: number; description?: string }) =>
-    api.post<{ status: string; data: any }>('/payments/intent', data),
+  // Create a new payment intent
+  createIntent: (data: CreatePaymentIntentData) =>
+    api.post<CreatePaymentIntentResponse>('/payments/intent', data),
   
-  // Get payment intent by ID
+  // Get payment intent by ID (Finternet ID or local MongoDB ID)
   getIntent: (intentId: string) =>
-    api.get<{ id: string; status: string }>(`/payments/intent/${intentId}`),
+    api.get<GetPaymentIntentResponse>(`/payments/intent/${intentId}`),
+  
+  // Confirm payment with wallet signature
+  confirmIntent: (intentId: string, data: ConfirmPaymentData) =>
+    api.post<ConfirmPaymentResponse>(`/payments/intent/${intentId}/confirm`, data),
+  
+  // Cancel a payment intent
+  cancelIntent: (intentId: string) =>
+    api.post<{ intent: PaymentIntent; status: 'CANCELLED' }>(`/payments/intent/${intentId}/cancel`),
+  
+  // Get pending payments for current user
+  getPending: () =>
+    api.get<{ pending_payments: PendingPayment[] }>('/payments/pending'),
+  
+  // Get payment history for current user
+  getHistory: (limit = 20) =>
+    api.get<{ payments: LocalPaymentRecord[] }>(`/payments/history?limit=${limit}`),
+  
+  // Get escrow details for conditional payment
+  getEscrow: (intentId: string) =>
+    api.get<{ escrow: ConditionalPayment }>(`/payments/intent/${intentId}/escrow`),
+  
+  // Submit delivery proof for conditional payment
+  submitDeliveryProof: (intentId: string, data: DeliveryProofData) =>
+    api.post<{ delivery_proof: ConditionalPayment }>(`/payments/intent/${intentId}/escrow/delivery-proof`, data),
+  
+  // Raise a dispute for conditional payment
+  raiseDispute: (intentId: string, data: DisputeData) =>
+    api.post<{ dispute: ConditionalPayment }>(`/payments/intent/${intentId}/escrow/dispute`, data),
+  
+  // Confirm deposit payment
+  confirmDeposit: (intentId: string, signature?: string, payerAddress?: string) =>
+    api.post<{
+      message: string;
+      amount?: number;
+      status: string;
+      finternet_id?: string;
+    }>('/payments/deposit/confirm', {
+      intent_id: intentId,
+      signature,
+      payer_address: payerAddress,
+    }),
 };

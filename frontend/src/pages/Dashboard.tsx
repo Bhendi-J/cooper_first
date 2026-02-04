@@ -4,7 +4,16 @@ import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { useAuthStore } from '@/store/authStore';
-import { eventsAPI, usersAPI, Event } from '@/lib/api';
+import { 
+  eventsAPI, 
+  usersAPI, 
+  dashboardsAPI, 
+  analyticsAPI,
+  Event, 
+  UserSummary, 
+  RecentActivity, 
+  AnalyticsOverview 
+} from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import {
   Wallet,
@@ -23,13 +32,34 @@ import {
   X,
   Loader2,
 } from 'lucide-react';
+import dayjs from 'dayjs';
+import relativeTime from 'dayjs/plugin/relativeTime';
+import {
+  PieChart as RechartsPieChart,
+  Pie,
+  Cell,
+  ResponsiveContainer,
+  LineChart,
+  Line,
+  XAxis,
+  YAxis,
+  Tooltip,
+  CartesianGrid,
+} from 'recharts';
 
-// Mock recent activity (backend doesn't have this endpoint yet)
-const mockRecentActivity = [
-  { id: '1', type: 'expense', description: 'Hotel Booking', amount: 12000, event: 'Trip', time: '2h ago' },
-  { id: '2', type: 'deposit', description: 'Someone deposited', amount: 5000, event: 'Trip', time: '4h ago' },
-  { id: '3', type: 'expense', description: 'Dinner', amount: 3500, event: 'Trip', time: '6h ago' },
-  { id: '4', type: 'deposit', description: 'You deposited', amount: 7500, event: 'Trip', time: '1d ago' },
+// Enable dayjs relative time plugin
+dayjs.extend(relativeTime);
+
+// Colors for pie chart
+const CHART_COLORS = [
+  'hsl(var(--primary))',
+  'hsl(var(--info))',
+  'hsl(var(--warning))',
+  'hsl(var(--success))',
+  'hsl(var(--destructive))',
+  '#8884d8',
+  '#82ca9d',
+  '#ffc658',
 ];
 
 export default function Dashboard() {
@@ -43,21 +73,26 @@ export default function Dashboard() {
   
   // Data state
   const [events, setEvents] = useState<Event[]>([]);
-  const [summary, setSummary] = useState<{ events: number; expenses: number } | null>(null);
+  const [summary, setSummary] = useState<UserSummary | null>(null);
+  const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
+  const [analytics, setAnalytics] = useState<AnalyticsOverview | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const [recentActivity] = useState(mockRecentActivity);
 
   // Fetch user's events on mount
   useEffect(() => {
     const fetchData = async () => {
       try {
         setIsLoading(true);
-        const [eventsRes, summaryRes] = await Promise.all([
+        const [eventsRes, summaryRes, activityRes, analyticsRes] = await Promise.all([
           eventsAPI.list(),
           usersAPI.getSummary(),
+          dashboardsAPI.getRecentActivity(5),
+          analyticsAPI.getOverview(),
         ]);
         setEvents(eventsRes.data.events || []);
         setSummary(summaryRes.data);
+        setRecentActivity(activityRes.data.activities || []);
+        setAnalytics(analyticsRes.data);
       } catch (error: any) {
         console.error('Failed to fetch dashboard data:', error);
         // If token is invalid, the interceptor will redirect to login
@@ -221,8 +256,8 @@ export default function Dashboard() {
                 <PieChart className="w-5 h-5 text-warning" />
               </div>
             </div>
-            <p className="text-3xl font-bold">{summary?.expenses || 0}</p>
-            <p className="text-sm text-muted-foreground mt-2">Expenses you've added</p>
+            <p className="text-3xl font-bold">₹{(summary?.total_expense_amount || 0).toLocaleString()}</p>
+            <p className="text-sm text-muted-foreground mt-2">{summary?.expense_count || 0} expenses added by you</p>
           </div>
         </motion.div>
 
@@ -361,52 +396,162 @@ export default function Dashboard() {
             </div>
 
             <div className="glass-card rounded-xl p-4">
-              <div className="space-y-4">
-                {recentActivity.map((activity) => (
-                  <div
-                    key={activity.id}
-                    className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent/50 transition-colors"
-                  >
-                    <div
-                      className={`w-10 h-10 rounded-lg flex items-center justify-center ${
-                        activity.type === 'deposit'
-                          ? 'bg-success/10'
-                          : 'bg-destructive/10'
-                      }`}
+              {recentActivity.length === 0 ? (
+                <p className="text-sm text-muted-foreground text-center py-8">
+                  No recent activity yet
+                </p>
+              ) : (
+                <div className="space-y-4">
+                  {recentActivity.map((activity) => (
+                    <Link
+                      key={activity._id}
+                      to={`/events/${activity.event_id}`}
+                      className="flex items-center gap-3 p-2 rounded-lg hover:bg-accent/50 transition-colors"
                     >
-                      {activity.type === 'deposit' ? (
-                        <ArrowUpRight className="w-5 h-5 text-success" />
-                      ) : (
-                        <ArrowDownRight className="w-5 h-5 text-destructive" />
-                      )}
-                    </div>
-                    <div className="flex-1 min-w-0">
-                      <p className="font-medium truncate">{activity.description}</p>
-                      <p className="text-xs text-muted-foreground">{activity.event}</p>
-                    </div>
-                    <div className="text-right">
-                      <p
-                        className={`font-semibold ${
+                      <div
+                        className={`w-10 h-10 rounded-lg flex items-center justify-center ${
                           activity.type === 'deposit'
-                            ? 'text-success'
-                            : 'text-destructive'
+                            ? 'bg-success/10'
+                            : 'bg-destructive/10'
                         }`}
                       >
-                        {activity.type === 'deposit' ? '+' : '-'}₹
-                        {activity.amount.toLocaleString()}
-                      </p>
-                      <p className="text-xs text-muted-foreground">{activity.time}</p>
-                    </div>
-                  </div>
-                ))}
-              </div>
-
-              <p className="text-sm text-muted-foreground text-center mt-4 pt-4 border-t border-border">
-                Activity data coming soon
-              </p>
+                        {activity.type === 'deposit' ? (
+                          <ArrowUpRight className="w-5 h-5 text-success" />
+                        ) : (
+                          <ArrowDownRight className="w-5 h-5 text-destructive" />
+                        )}
+                      </div>
+                      <div className="flex-1 min-w-0">
+                        <p className="font-medium truncate">{activity.description || 'Expense'}</p>
+                        <p className="text-xs text-muted-foreground">{activity.event_name}</p>
+                      </div>
+                      <div className="text-right">
+                        <p
+                          className={`font-semibold ${
+                            activity.type === 'deposit'
+                              ? 'text-success'
+                              : 'text-destructive'
+                          }`}
+                        >
+                          {activity.type === 'deposit' ? '+' : '-'}₹
+                          {activity.amount.toLocaleString()}
+                        </p>
+                        <p className="text-xs text-muted-foreground">
+                          {dayjs(activity.created_at).fromNow()}
+                        </p>
+                      </div>
+                    </Link>
+                  ))}
+                </div>
+              )}
             </div>
           </motion.div>
         </div>
+
+        {/* Analytics Charts */}
+        {analytics && (analytics.category_totals.length > 0 || analytics.daily_expenses.length > 0) && (
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.6 }}
+            className="mt-8"
+          >
+            <h2 className="text-xl font-display font-semibold mb-4">Analytics</h2>
+            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+              {/* Category Pie Chart */}
+              {analytics.category_totals.length > 0 && (
+                <div className="glass-card p-6 rounded-xl">
+                  <h3 className="text-lg font-semibold mb-4">Spending by Category</h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <RechartsPieChart>
+                        <Pie
+                          data={analytics.category_totals}
+                          dataKey="total"
+                          nameKey="category_name"
+                          cx="50%"
+                          cy="50%"
+                          outerRadius={80}
+                          label={({ category_name, percent }) =>
+                            `${category_name} (${(percent * 100).toFixed(0)}%)`
+                          }
+                        >
+                          {analytics.category_totals.map((_, index) => (
+                            <Cell
+                              key={`cell-${index}`}
+                              fill={CHART_COLORS[index % CHART_COLORS.length]}
+                            />
+                          ))}
+                        </Pie>
+                        <Tooltip
+                          formatter={(value: number) => [`₹${value.toLocaleString()}`, 'Amount']}
+                          contentStyle={{
+                            backgroundColor: 'hsl(var(--card))',
+                            border: '1px solid hsl(var(--border))',
+                            borderRadius: '8px',
+                          }}
+                        />
+                      </RechartsPieChart>
+                    </ResponsiveContainer>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2 justify-center">
+                    {analytics.category_totals.map((cat, index) => (
+                      <div key={cat.category_id} className="flex items-center gap-2 text-sm">
+                        <div
+                          className="w-3 h-3 rounded-full"
+                          style={{ backgroundColor: CHART_COLORS[index % CHART_COLORS.length] }}
+                        />
+                        <span className="text-muted-foreground">{cat.category_name}</span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+              )}
+
+              {/* Daily Expenses Line Chart */}
+              {analytics.daily_expenses.length > 0 && (
+                <div className="glass-card p-6 rounded-xl">
+                  <h3 className="text-lg font-semibold mb-4">Expenses Over Time</h3>
+                  <div className="h-64">
+                    <ResponsiveContainer width="100%" height="100%">
+                      <LineChart data={analytics.daily_expenses}>
+                        <CartesianGrid strokeDasharray="3 3" stroke="hsl(var(--border))" />
+                        <XAxis
+                          dataKey="date"
+                          tick={{ fontSize: 12 }}
+                          tickFormatter={(value) => dayjs(value).format('MMM D')}
+                          stroke="hsl(var(--muted-foreground))"
+                        />
+                        <YAxis
+                          tick={{ fontSize: 12 }}
+                          tickFormatter={(value) => `₹${value >= 1000 ? `${(value / 1000).toFixed(0)}k` : value}`}
+                          stroke="hsl(var(--muted-foreground))"
+                        />
+                        <Tooltip
+                          formatter={(value: number) => [`₹${value.toLocaleString()}`, 'Amount']}
+                          labelFormatter={(label) => dayjs(label).format('MMMM D, YYYY')}
+                          contentStyle={{
+                            backgroundColor: 'hsl(var(--card))',
+                            border: '1px solid hsl(var(--border))',
+                            borderRadius: '8px',
+                          }}
+                        />
+                        <Line
+                          type="monotone"
+                          dataKey="total"
+                          stroke="hsl(var(--primary))"
+                          strokeWidth={2}
+                          dot={{ fill: 'hsl(var(--primary))', strokeWidth: 2 }}
+                          activeDot={{ r: 6 }}
+                        />
+                      </LineChart>
+                    </ResponsiveContainer>
+                  </div>
+                </div>
+              )}
+            </div>
+          </motion.div>
+        )}
       </main>
 
       {/* Join Event Modal */}
