@@ -22,11 +22,24 @@ def profile():
 @jwt_required()
 def summary():
     uid = get_jwt_identity()
+    user_oid = ObjectId(uid)
 
-    events = mongo.participants.count_documents({"user_id": uid})
-    expenses = mongo.expenses.count_documents({"payer_id": uid})
+    # Count events user participates in
+    events_count = mongo.participants.count_documents({"user_id": user_oid})
+    
+    # Count expenses added by user
+    expense_count = mongo.expenses.count_documents({"payer_id": user_oid})
+    
+    # Aggregate total expense amount for expenses added by user
+    total_expense_pipeline = [
+        {"$match": {"payer_id": user_oid}},
+        {"$group": {"_id": None, "total": {"$sum": "$amount"}}}
+    ]
+    total_expense_result = list(mongo.expenses.aggregate(total_expense_pipeline))
+    total_expense_amount = total_expense_result[0]["total"] if total_expense_result else 0
 
     return jsonify({
-        "events": events,
-        "expenses": expenses
+        "events": events_count,
+        "expense_count": expense_count,
+        "total_expense_amount": total_expense_amount
     })

@@ -10,7 +10,38 @@ MOCK_MODE = False
 
 
 class FinternetService:
-    """Service for interacting with Finternet Payment Gateway API."""
+    """
+    Service for interacting with Finternet Payment Gateway API.
+    
+    Supports:
+    - Payment Intents (create, retrieve, confirm, cancel)
+    - Conditional Payments (escrow, delivery proof, disputes)
+    - Mock Mode for demos/presentations
+    
+    Payment Flow:
+    1. Create payment intent -> get paymentUrl
+    2. Redirect user to paymentUrl
+    3. User signs EIP-712 message with wallet
+    4. Confirm payment with signature
+    5. Track status: INITIATED -> PROCESSING -> SUCCEEDED -> SETTLED -> FINAL
+    """
+    
+    # Default base URL (can be overridden by FINTERNET_BASE_URL env var)
+    DEFAULT_BASE_URL = "https://api.fmm.finternetlab.io/v1"
+    
+    # Payment statuses
+    STATUS_INITIATED = "INITIATED"
+    STATUS_REQUIRES_SIGNATURE = "REQUIRES_SIGNATURE"
+    STATUS_PROCESSING = "PROCESSING"
+    STATUS_SUCCEEDED = "SUCCEEDED"
+    STATUS_SETTLED = "SETTLED"
+    STATUS_FINAL = "FINAL"
+    STATUS_FAILED = "FAILED"
+    STATUS_CANCELLED = "CANCELLED"
+    
+    # Payment types
+    TYPE_CONDITIONAL = "CONDITIONAL"
+    TYPE_DELIVERY_VS_PAYMENT = "DELIVERY_VS_PAYMENT"
     
     BASE_URL = "https://api.fmm.finternetlab.io/api/v1"
     MOCK_PAYMENT_URL = "http://localhost:5173/payment/processing"
@@ -27,9 +58,10 @@ class FinternetService:
                 raise ValueError("Finternet API key is required")
     
     def _headers(self) -> Dict[str, str]:
+        """Get request headers with API key authentication."""
         return {
-            "X-API-Key": self.api_key,
-            "Content-Type": "application/json"
+            "Content-Type": "application/json",
+            "X-API-Key": self.api_key
         }
     
     def _generate_tx_hash(self) -> str:
@@ -184,13 +216,7 @@ class FinternetService:
             "payerAddress": payer_address
         }
         
-        response = requests.post(
-            f"{self.BASE_URL}/payment-intents/{intent_id}/confirm",
-            headers=self._headers(),
-            json=payload
-        )
-        response.raise_for_status()
-        return response.json()
+        return self._request("POST", f"/payment-intents/{intent_id}/confirm", json=payload)
     
     def cancel_payment(self, intent_id: str) -> Dict[str, Any]:
         """Cancel a payment intent (mocked for demo)."""
@@ -211,6 +237,7 @@ class FinternetService:
         response.raise_for_status()
         return response.json()
 
+# ==================== LEGACY COMPATIBILITY ====================
 
 # Split payment calculation utility
 def calculate_split(total_amount: float, num_participants: int, weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:
@@ -248,7 +275,11 @@ def calculate_split(total_amount: float, num_participants: int, weights: Optiona
 def create_payment_intent(amount, currency="USDC"):
     """Legacy function for backwards compatibility."""
     service = FinternetService()
-    return service.create_payment_intent(str(amount), currency)
+    return service.create_payment_intent(
+        amount=str(amount),
+        currency=currency,
+        description=description
+    )
 
 
 def fetch_intent(intent_id):

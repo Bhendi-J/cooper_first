@@ -51,7 +51,7 @@ export default function Login() {
       { id: 'demo-user', name: 'Demo User', email: 'demo@cooper.app' },
       'demo-token'
     );
-    navigate('/dashboard');
+  navigate('/dashboard');
   };
 
   return (

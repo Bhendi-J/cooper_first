@@ -349,6 +349,22 @@ def toggle_invite_link(event_id):
 @events_bp.route("/<event_id>/deposit", methods=["POST"])
 @jwt_required()
 def deposit(event_id):
+    """
+    Deposit money to an event.
+    
+    Two modes:
+    1. Direct deposit (amount only) - just updates balance
+    2. Finternet deposit (use_finternet=True) - creates a payment intent
+    
+    Request body:
+    {
+        "amount": 100.00,
+        "use_finternet": true  // optional, creates payment intent
+    }
+    """
+    from app.payments.services.finternet import FinternetService
+    from app.payments.models import PaymentIntentDB
+    
     event_oid = safe_object_id(event_id)
     user_id = safe_object_id(get_jwt_identity())
     data = request.get_json()
@@ -371,6 +387,66 @@ def deposit(event_id):
     if not participant:
         return jsonify({"error": "Not a participant"}), 403
 
+    use_finternet = data.get("use_finternet", False)
+    
+    if use_finternet:
+        # Create Finternet payment intent for deposit
+        finternet = FinternetService()
+        
+        intent_response = finternet.create_payment_intent(
+            amount=str(amount),
+            currency=data.get("currency", "USDC"),
+            payment_type="CONDITIONAL",
+            settlement_method="OFF_RAMP_MOCK",
+            description=f"Deposit to event: {event.get('name', 'Event')}",
+            metadata={
+                "user_id": str(user_id),
+                "event_id": str(event_oid),
+                "type": "deposit"
+            }
+        )
+        
+        if "error" in intent_response:
+            return jsonify({
+                "error": intent_response["error"].get("message", "Failed to create payment intent"),
+                "details": intent_response["error"]
+            }), 500
+        
+        # Store locally
+        local_id = PaymentIntentDB.create(intent_response)
+        
+        # Update with user/event IDs
+        mongo.payment_intents.update_one(
+            {"_id": ObjectId(local_id)},
+            {"$set": {
+                "user_id": str(user_id),
+                "event_id": str(event_oid),
+                "intent_type": "deposit"
+            }}
+        )
+        
+        payment_url = finternet.get_payment_url(intent_response)
+        
+        # Log pending deposit activity
+        mongo.activities.insert_one({
+            "type": "deposit_pending",
+            "event_id": event_oid,
+            "user_id": user_id,
+            "amount": amount,
+            "description": "Deposit (pending payment)",
+            "payment_intent_id": local_id,
+            "created_at": datetime.utcnow()
+        })
+        
+        return jsonify({
+            "message": "Payment intent created",
+            "payment_url": payment_url,
+            "intent_id": local_id,
+            "finternet_id": intent_response.get("id"),
+            "amount": amount
+        })
+    
+    # Direct deposit (no Finternet)
     mongo.participants.update_one(
         {"_id": participant["_id"]},
         {"$inc": {
@@ -383,6 +459,16 @@ def deposit(event_id):
         {"_id": event_oid},
         {"$inc": {"total_pool": amount}}
     )
+
+    # Log deposit activity
+    mongo.activities.insert_one({
+        "type": "deposit",
+        "event_id": event_oid,
+        "user_id": user_id,
+        "amount": amount,
+        "description": "Deposit",
+        "created_at": datetime.utcnow()
+    })
 
     return jsonify({
         "message": "Deposit successful",
