@@ -40,13 +40,13 @@ export default function EventDetail() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { user } = useAuthStore();
-  
+
   const [activeTab, setActiveTab] = useState<'expenses' | 'members' | 'analytics'>('expenses');
   const [isLoading, setIsLoading] = useState(true);
   const [event, setEvent] = useState<Event | null>(null);
   const [expenses, setExpenses] = useState<Expense[]>([]);
   const [inviteCode, setInviteCode] = useState('');
-  
+
   // Deposit modal state
   const [showDepositModal, setShowDepositModal] = useState(false);
   const [depositAmount, setDepositAmount] = useState('');
@@ -55,17 +55,17 @@ export default function EventDetail() {
   useEffect(() => {
     const fetchEventData = async () => {
       if (!id) return;
-      
+
       setIsLoading(true);
       try {
         const [eventRes, expensesRes] = await Promise.all([
           eventsAPI.get(id),
           expensesAPI.getByEvent(id),
         ]);
-        
+
         setEvent(eventRes.data.event);
         setExpenses(expensesRes.data.expenses || []);
-        
+
         // Try to get invite code
         try {
           const inviteRes = await eventsAPI.getInviteLink(id);
@@ -94,7 +94,7 @@ export default function EventDetail() {
         setIsLoading(false);
       }
     };
-    
+
     fetchEventData();
   }, [id, navigate, toast]);
 
@@ -108,31 +108,18 @@ export default function EventDetail() {
     }
   };
 
-  const handleDeposit = async () => {
+  const handleDeposit = () => {
     if (!depositAmount || !id) return;
-    
-    setIsDepositing(true);
-    try {
-      await eventsAPI.deposit(id, parseFloat(depositAmount));
-      toast({
-        title: 'Deposit successful!',
-        description: `₹${depositAmount} has been added to the pool.`,
-      });
-      setShowDepositModal(false);
-      setDepositAmount('');
-      
-      // Refresh event data
-      const eventRes = await eventsAPI.get(id);
-      setEvent(eventRes.data.event);
-    } catch (error: any) {
-      toast({
-        title: 'Deposit failed',
-        description: error.response?.data?.error || 'Something went wrong',
-        variant: 'destructive',
-      });
-    } finally {
-      setIsDepositing(false);
-    }
+
+    // Store necessary details for the callback
+    localStorage.setItem('pending_deposit_event_id', id);
+    localStorage.setItem('pending_deposit_amount', depositAmount);
+
+    // Redirect to payment page
+    navigate(`/payment?amount=${depositAmount}&description=Deposit for ${event?.name || 'Event'}&returnUrl=/payment/callback`);
+
+    setShowDepositModal(false);
+    setDepositAmount('');
   };
 
   if (isLoading) {
@@ -150,7 +137,7 @@ export default function EventDetail() {
   const totalSpent = event.total_spent || 0;
   const totalPool = event.total_pool || 0;
   const participants = event.participants || [];
-  
+
   // Find current user's participant record
   const currentUserParticipant = participants.find(
     (p) => p.user_id === user?.id
@@ -323,11 +310,10 @@ export default function EventDetail() {
             <button
               key={tab}
               onClick={() => setActiveTab(tab)}
-              className={`px-4 py-3 font-medium capitalize transition-colors relative ${
-                activeTab === tab
+              className={`px-4 py-3 font-medium capitalize transition-colors relative ${activeTab === tab
                   ? 'text-foreground'
                   : 'text-muted-foreground hover:text-foreground'
-              }`}
+                }`}
             >
               {tab}
               {activeTab === tab && (
@@ -396,11 +382,10 @@ export default function EventDetail() {
                         </p>
                       </div>
                       <div
-                        className={`w-8 h-8 rounded-full flex items-center justify-center ${
-                          expense.status === 'verified'
+                        className={`w-8 h-8 rounded-full flex items-center justify-center ${expense.status === 'verified'
                             ? 'bg-success/10 text-success'
                             : 'bg-warning/10 text-warning'
-                        }`}
+                          }`}
                       >
                         {expense.status === 'verified' ? (
                           <CheckCircle2 className="w-4 h-4" />
@@ -467,11 +452,10 @@ export default function EventDetail() {
                     <div className="mt-4">
                       <div className="w-full h-2 bg-background rounded-full overflow-hidden">
                         <div
-                          className={`h-full rounded-full ${
-                            member.balance / member.deposit_amount > 0.3
+                          className={`h-full rounded-full ${member.balance / member.deposit_amount > 0.3
                               ? 'gradient-primary'
                               : 'bg-warning'
-                          }`}
+                            }`}
                           style={{ width: `${Math.min(100, (member.balance / member.deposit_amount) * 100)}%` }}
                         />
                       </div>

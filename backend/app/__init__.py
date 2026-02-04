@@ -45,11 +45,13 @@ def create_app(config_class=Config):
     from app.expenses.routes import expenses_bp
     from app.dashboards.routes import bp as dashboards_bp
     from app.analytics.routes import analytics_bp
-
+    from app.payments.routes import payments_bp
+    
     app.register_blueprint(expenses_bp, url_prefix='/api/v1/expenses')
     app.register_blueprint(events_bp, url_prefix='/api/v1/events')
     app.register_blueprint(auth_bp, url_prefix='/api/v1/auth')
     app.register_blueprint(users_bp, url_prefix='/api/v1/users')
+    app.register_blueprint(payments_bp, url_prefix='/api/v1/payments')
     app.register_blueprint(dashboards_bp, url_prefix='/api/v1/dashboards')
     app.register_blueprint(analytics_bp, url_prefix='/api/v1/analytics')
 

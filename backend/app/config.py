@@ -32,3 +32,6 @@ class Config:
     MAIL_USE_TLS = True
     MAIL_USERNAME = os.environ.get('MAIL_USERNAME')
     MAIL_PASSWORD = os.environ.get('MAIL_PASSWORD')
+    
+    # Finternet Payment Gateway
+    FINTERNET_API_KEY = os.environ.get('FINTERNET_API_KEY')

@@ -1,3 +1,7 @@
+"""Payment routes for Finternet integration."""
+
+from app.payments.services.finternet import FinternetService
+import os
 """
 Payment routes for Finternet integration.
 
@@ -20,7 +24,7 @@ from app.extensions import db as mongo
 from app.payments.services.finternet import FinternetService
 from app.payments.models import PaymentIntentDB, SplitPaymentDB
 
-bp = Blueprint("payments", __name__, url_prefix="/payments")
+bp = Blueprint("payments", __name__)
 
 
 # ==================== PAYMENT INTENTS ====================
@@ -29,11 +33,27 @@ bp = Blueprint("payments", __name__, url_prefix="/payments")
 @jwt_required()
 def create_intent():
     """
+    Create a new payment intent via Finternet.
     Create a new payment intent.
     
     Request body:
     {
         "amount": "100.00",
+        "currency": "USDC",  // optional, defaults to USDC
+        "description": "Payment for expense split"  // optional
+    }
+    
+    Returns:
+    {
+        "id": "intent_xxx",
+        "status": "INITIATED",
+        "paymentUrl": "https://pay.fmm.finternetlab.io/?intent=intent_xxx",
+        "amount": "100.00",
+        "currency": "USDC"
+    }
+    """
+    data = request.get_json() or {}
+    
         "currency": "USDC",
         "description": "Payment for expense split",
         "event_id": "optional_event_id",
@@ -57,6 +77,33 @@ def create_intent():
     if not amount:
         return jsonify({"error": "Amount is required"}), 400
     
+    currency = data.get("currency", "USDC")
+    description = data.get("description", "Cooper payment")
+    
+    try:
+        finternet = FinternetService()
+        result = finternet.create_payment_intent(
+            amount=str(amount),
+            currency=currency,
+            description=description
+        )
+        
+        # Extract key info for frontend
+        intent_data = result.get("data", result)
+        response = {
+            "id": intent_data.get("id"),
+            "status": intent_data.get("status"),
+            "paymentUrl": intent_data.get("paymentUrl"),
+            "amount": intent_data.get("amount"),
+            "currency": intent_data.get("currency", currency)
+        }
+        
+        return jsonify(response), 201
+        
+    except ValueError as e:
+        return jsonify({"error": str(e)}), 400
+    except Exception as e:
+        return jsonify({"error": f"Failed to create payment intent: {str(e)}"}), 500
     try:
         amount_float = float(amount)
         if amount_float <= 0:
@@ -114,6 +161,36 @@ def create_intent():
 @jwt_required()
 def get_intent(intent_id):
     """
+    Get the status of a payment intent.
+    
+    Returns:
+    {
+        "id": "intent_xxx",
+        "status": "INITIATED|PROCESSING|SUCCEEDED|SETTLED|FINAL",
+        "amount": "100.00",
+        "currency": "USDC",
+        "settlementStatus": "PENDING|IN_PROGRESS|COMPLETED"
+    }
+    """
+    try:
+        finternet = FinternetService()
+        result = finternet.get_payment_intent(intent_id)
+        
+        intent_data = result.get("data", result)
+        response = {
+            "id": intent_data.get("id"),
+            "status": intent_data.get("status"),
+            "amount": intent_data.get("amount"),
+            "currency": intent_data.get("currency"),
+            "settlementStatus": intent_data.get("settlementStatus"),
+            "transactionHash": intent_data.get("transactionHash"),
+            "phases": intent_data.get("phases", [])
+        }
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to get payment intent: {str(e)}"}), 500
     Get payment intent details.
     
     Fetches from Finternet API and updates local status.
@@ -175,6 +252,38 @@ def get_intent(intent_id):
 @jwt_required()
 def confirm_intent(intent_id):
     """
+    Confirm a payment intent after user signs the transaction.
+    
+    Request body:
+    {
+        "signature": "0x...",
+        "payerAddress": "0x..."
+    }
+    """
+    data = request.get_json() or {}
+    
+    signature = data.get("signature")
+    payer_address = data.get("payerAddress")
+    
+    if not signature or not payer_address:
+        return jsonify({"error": "Signature and payerAddress are required"}), 400
+    
+    try:
+        finternet = FinternetService()
+        result = finternet.confirm_payment(intent_id, signature, payer_address)
+        
+        intent_data = result.get("data", result)
+        response = {
+            "id": intent_data.get("id"),
+            "status": intent_data.get("status"),
+            "transactionHash": intent_data.get("transactionHash"),
+            "phases": intent_data.get("phases", [])
+        }
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to confirm payment: {str(e)}"}), 500
     Confirm a payment intent with wallet signature.
     
     Request body:
@@ -238,436 +347,89 @@ def confirm_intent(intent_id):
 @jwt_required()
 def cancel_intent(intent_id):
     """
-    Cancel a payment intent.
-    
-    Only works for intents in INITIATED or REQUIRES_SIGNATURE status.
+    Cancel a pending payment intent.
     """
-    if intent_id.startswith("intent_"):
-        finternet_id = intent_id
-    else:
-        local_record = PaymentIntentDB.find_by_id(intent_id)
-        finternet_id = local_record.get("finternet_id") if local_record else None
-    
-    if not finternet_id:
-        return jsonify({"error": "Payment intent not found"}), 404
-    
-    finternet = FinternetService()
-    cancel_response = finternet.cancel_payment(finternet_id)
-    
-    if "error" in cancel_response:
-        return jsonify({
-            "error": cancel_response["error"].get("message", "Failed to cancel payment"),
-            "details": cancel_response["error"]
-        }), 400
-    
-    # Update local status
-    PaymentIntentDB.update_status(finternet_id, "CANCELLED")
-    
-    return jsonify({
-        "intent": cancel_response,
-        "status": "CANCELLED"
-    })
+    try:
+        finternet = FinternetService()
+        result = finternet.cancel_payment(intent_id)
+        
+        intent_data = result.get("data", result)
+        response = {
+            "id": intent_data.get("id"),
+            "status": intent_data.get("status")
+        }
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        return jsonify({"error": f"Failed to cancel payment: {str(e)}"}), 500
 
 
-# ==================== USER PAYMENTS ====================
-
-@bp.route("/pending", methods=["GET"])
+@bp.route("/split/calculate", methods=["POST"])
 @jwt_required()
-def get_pending_payments():
+def calculate_split():
     """
-    Get all pending payments for the current user.
-    
-    Returns split payments the user needs to pay.
-    """
-    user_id = get_jwt_identity()
-    
-    pending = SplitPaymentDB.find_pending_for_user(user_id)
-    
-    # Enrich with expense details
-    for payment in pending:
-        expense = mongo.expenses.find_one({"_id": ObjectId(payment["expense_id"])})
-        if expense:
-            payment["expense_description"] = expense.get("description", "Expense")
-            payment["expense_amount"] = expense.get("amount", 0)
-            
-            # Get event name
-            event = mongo.events.find_one({"_id": expense.get("event_id")})
-            if event:
-                payment["event_name"] = event.get("name", "Event")
-    
-    return jsonify({"pending_payments": pending})
-
-
-@bp.route("/history", methods=["GET"])
-@jwt_required()
-def get_payment_history():
-    """
-    Get payment history for the current user.
-    """
-    user_id = get_jwt_identity()
-    limit = request.args.get("limit", 20, type=int)
-    
-    payments = PaymentIntentDB.find_by_user(user_id, limit)
-    
-    return jsonify({"payments": payments})
-
-
-# ==================== CONDITIONAL PAYMENTS (ESCROW) ====================
-
-@bp.route("/intent/<intent_id>/escrow", methods=["GET"])
-@jwt_required()
-def get_escrow(intent_id):
-    """
-    Get conditional payment (escrow) details.
-    
-    Only available for DELIVERY_VS_PAYMENT type payments.
-    """
-    if intent_id.startswith("intent_"):
-        finternet_id = intent_id
-    else:
-        local_record = PaymentIntentDB.find_by_id(intent_id)
-        finternet_id = local_record.get("finternet_id") if local_record else None
-    
-    if not finternet_id:
-        return jsonify({"error": "Payment intent not found"}), 404
-    
-    finternet = FinternetService()
-    escrow_response = finternet.get_conditional_payment(finternet_id)
-    
-    if "error" in escrow_response:
-        return jsonify({
-            "error": escrow_response["error"].get("message", "Failed to get escrow details"),
-            "details": escrow_response["error"]
-        }), 400
-    
-    return jsonify({"escrow": escrow_response})
-
-
-@bp.route("/intent/<intent_id>/escrow/delivery-proof", methods=["POST"])
-@jwt_required()
-def submit_delivery_proof(intent_id):
-    """
-    Submit delivery proof for conditional payment.
+    Calculate split amounts for participants.
     
     Request body:
     {
-        "proof_hash": "0x...",  // Keccak256 hash of proof
-        "proof_uri": "https://...",  // Optional URI to proof
-        "submitted_by": "0x..."  // Wallet address
+        "total": 100.00,
+        "participants": 4,
+        "weights": {"user1": 2, "user2": 1, "user3": 1}  // optional for unequal splits
     }
-    """
-    user_id = get_jwt_identity()
-    data = request.get_json() or {}
     
-    proof_hash = data.get("proof_hash") or data.get("proofHash")
-    submitted_by = data.get("submitted_by") or data.get("submittedBy")
-    
-    if not proof_hash or not submitted_by:
-        return jsonify({"error": "proof_hash and submitted_by are required"}), 400
-    
-    if intent_id.startswith("intent_"):
-        finternet_id = intent_id
-    else:
-        local_record = PaymentIntentDB.find_by_id(intent_id)
-        finternet_id = local_record.get("finternet_id") if local_record else None
-    
-    if not finternet_id:
-        return jsonify({"error": "Payment intent not found"}), 404
-    
-    finternet = FinternetService()
-    proof_response = finternet.submit_delivery_proof(
-        finternet_id,
-        proof_hash,
-        submitted_by,
-        proof_uri=data.get("proof_uri") or data.get("proofURI")
-    )
-    
-    if "error" in proof_response:
-        return jsonify({
-            "error": proof_response["error"].get("message", "Failed to submit delivery proof"),
-            "details": proof_response["error"]
-        }), 400
-    
-    return jsonify({"delivery_proof": proof_response})
-
-
-@bp.route("/intent/<intent_id>/escrow/dispute", methods=["POST"])
-@jwt_required()
-def raise_dispute(intent_id):
-    """
-    Raise a dispute for conditional payment.
-    
-    Request body:
+    Returns:
     {
-        "reason": "Item not delivered as described",
-        "raised_by": "0x...",  // Wallet address
-        "dispute_window": "604800"  // Optional, default 7 days
+        "total": 100.00,
+        "num_participants": 4,
+        "per_person": 25.00,
+        "splits": {"participant_1": 25.00, ...},
+        "currency": "USDC"
     }
     """
-    user_id = get_jwt_identity()
+    from app.payments.services.finternet import calculate_split as calc_split
+    
     data = request.get_json() or {}
     
-    reason = data.get("reason")
-    raised_by = data.get("raised_by") or data.get("raisedBy")
+    total = data.get("total")
+    participants = data.get("participants")
+    weights = data.get("weights")
     
-    if not reason or not raised_by:
-        return jsonify({"error": "reason and raised_by are required"}), 400
+    if not total or not participants:
+        return jsonify({"error": "Total and participants are required"}), 400
     
-    if intent_id.startswith("intent_"):
-        finternet_id = intent_id
-    else:
-        local_record = PaymentIntentDB.find_by_id(intent_id)
-        finternet_id = local_record.get("finternet_id") if local_record else None
-    
-    if not finternet_id:
-        return jsonify({"error": "Payment intent not found"}), 404
-    
-    finternet = FinternetService()
-    dispute_response = finternet.raise_dispute(
-        finternet_id,
-        reason,
-        raised_by,
-        dispute_window=data.get("dispute_window", "604800")
-    )
-    
-    if "error" in dispute_response:
-        return jsonify({
-            "error": dispute_response["error"].get("message", "Failed to raise dispute"),
-            "details": dispute_response["error"]
-        }), 400
-    
-    return jsonify({"dispute": dispute_response})
+    try:
+        result = calc_split(float(total), int(participants), weights)
+        return jsonify(result)
+    except Exception as e:
+        return jsonify({"error": f"Failed to calculate split: {str(e)}"}), 500
 
 
-# ==================== DEPOSIT CONFIRMATION ====================
-
-@bp.route("/deposit/confirm", methods=["POST"])
+@bp.route("/mock/simulate-success/<intent_id>", methods=["POST"])
 @jwt_required()
-def confirm_deposit():
+def simulate_success(intent_id):
     """
-    Confirm a deposit payment after Finternet transaction is complete.
-    
-    This is called after the user signs the transaction on Finternet.
-    Updates the participant's balance and event total.
-    
-    Request body:
-    {
-        "intent_id": "local_mongodb_id or finternet_id",
-        "signature": "0x...",  // Optional, if confirming directly
-        "payer_address": "0x..."
-    }
+    [DEMO ONLY] Simulate a successful payment for hackathon demo.
+    This endpoint instantly marks a payment as SUCCEEDED.
     """
-    user_id = get_jwt_identity()
-    data = request.get_json() or {}
-    
-    intent_id = data.get("intent_id")
-    if not intent_id:
-        return jsonify({"error": "intent_id is required"}), 400
-    
-    # Find the payment intent
-    if intent_id.startswith("intent_"):
-        finternet_id = intent_id
-        local_record = PaymentIntentDB.find_by_finternet_id(finternet_id)
-    else:
-        local_record = PaymentIntentDB.find_by_id(intent_id)
-        finternet_id = local_record.get("finternet_id") if local_record else None
-    
-    if not local_record:
-        return jsonify({"error": "Payment intent not found"}), 404
-    
-    # Verify this is a deposit intent
-    if local_record.get("intent_type") != "deposit":
-        return jsonify({"error": "This is not a deposit payment intent"}), 400
-    
-    # Verify user owns this intent
-    if local_record.get("user_id") != user_id:
-        return jsonify({"error": "Unauthorized"}), 403
-    
-    # Check if already confirmed
-    if local_record.get("status") in ["SUCCEEDED", "SETTLED", "FINAL"]:
-        return jsonify({
-            "message": "Deposit already confirmed",
-            "status": local_record.get("status")
-        })
-    
-    finternet = FinternetService()
-    
-    # Check status with Finternet
-    intent_response = finternet.get_payment_intent(finternet_id)
-    status = intent_response.get("status")
-    
-    # If still initiated and we have signature, confirm it
-    if status == "INITIATED" and data.get("signature") and data.get("payer_address"):
-        confirm_response = finternet.confirm_payment(
-            finternet_id,
-            data["signature"],
-            data["payer_address"]
+    try:
+        finternet = FinternetService()
+        # Force success status
+        result = finternet.confirm_payment(
+            intent_id,
+            signature="0xdemo_signature",
+            payer_address="0xdemo_payer"
         )
-        if "error" in confirm_response:
-            return jsonify({
-                "error": confirm_response["error"].get("message", "Failed to confirm payment"),
-                "details": confirm_response["error"]
-            }), 400
-        status = confirm_response.get("status", "PROCESSING")
-    
-    # Check if payment succeeded
-    if status in ["SUCCEEDED", "SETTLED", "FINAL"]:
-        # Update local record
-        PaymentIntentDB.update_status(finternet_id, status)
         
-        # Update participant balance
-        event_id = local_record.get("event_id")
-        amount = float(local_record.get("amount", 0))
+        intent_data = result.get("data", result)
+        response = {
+            "id": intent_data.get("id", intent_id),
+            "status": "SUCCEEDED",
+            "transactionHash": intent_data.get("transactionHash"),
+            "message": "Payment simulated successfully for demo"
+        }
         
-        if event_id:
-            event_oid = ObjectId(event_id)
-            user_oid = ObjectId(user_id)
-            
-            # Update participant
-            mongo.participants.update_one(
-                {"event_id": event_oid, "user_id": user_oid},
-                {"$inc": {
-                    "deposit_amount": amount,
-                    "balance": amount
-                }}
-            )
-            
-            # Update event total
-            mongo.events.update_one(
-                {"_id": event_oid},
-                {"$inc": {"total_pool": amount}}
-            )
-            
-            # Update activity to confirmed
-            mongo.activities.update_one(
-                {"payment_intent_id": str(local_record["_id"])},
-                {"$set": {
-                    "type": "deposit",
-                    "description": "Deposit confirmed"
-                }}
-            )
-            
-            # Log confirmed deposit
-            mongo.activities.insert_one({
-                "type": "deposit",
-                "event_id": event_oid,
-                "user_id": user_oid,
-                "amount": amount,
-                "description": "Deposit (via Finternet)",
-                "payment_intent_id": str(local_record["_id"]),
-                "created_at": datetime.utcnow()
-            })
+        return jsonify(response)
         
-        return jsonify({
-            "message": "Deposit confirmed",
-            "amount": amount,
-            "status": status
-        })
-    
-    # Payment still processing
-    return jsonify({
-        "message": "Payment still processing",
-        "status": status,
-        "finternet_id": finternet_id
-    }), 202
-
-
-@bp.route("/webhook", methods=["POST"])
-def finternet_webhook():
-    """
-    Webhook endpoint for Finternet payment status updates.
-    
-    This is called by Finternet when payment status changes.
-    Automatically confirms deposits and refunds.
-    """
-    data = request.get_json() or {}
-    
-    # Verify webhook (in production, verify signature)
-    # webhook_secret = os.environ.get("FINTERNET_WEBHOOK_SECRET")
-    
-    event_type = data.get("type")
-    intent_data = data.get("data", {})
-    finternet_id = intent_data.get("id")
-    
-    if not finternet_id:
-        return jsonify({"error": "Missing intent ID"}), 400
-    
-    # Find local record
-    local_record = PaymentIntentDB.find_by_finternet_id(finternet_id)
-    if not local_record:
-        return jsonify({"error": "Unknown payment intent"}), 404
-    
-    new_status = intent_data.get("status")
-    if new_status:
-        PaymentIntentDB.update_status(finternet_id, new_status)
-    
-    # Handle successful payments
-    if new_status in ["SUCCEEDED", "SETTLED", "FINAL"]:
-        intent_type = local_record.get("intent_type")
-        
-        if intent_type == "deposit":
-            # Auto-confirm deposit
-            event_id = local_record.get("event_id")
-            user_id = local_record.get("user_id")
-            amount = float(local_record.get("amount", 0))
-            
-            if event_id and user_id:
-                event_oid = ObjectId(event_id)
-                user_oid = ObjectId(user_id)
-                
-                mongo.participants.update_one(
-                    {"event_id": event_oid, "user_id": user_oid},
-                    {"$inc": {
-                        "deposit_amount": amount,
-                        "balance": amount
-                    }}
-                )
-                
-                mongo.events.update_one(
-                    {"_id": event_oid},
-                    {"$inc": {"total_pool": amount}}
-                )
-                
-                mongo.activities.insert_one({
-                    "type": "deposit",
-                    "event_id": event_oid,
-                    "user_id": user_oid,
-                    "amount": amount,
-                    "description": "Deposit confirmed (webhook)",
-                    "created_at": datetime.utcnow()
-                })
-        
-        elif intent_type == "refund":
-            # Auto-confirm refund
-            event_id = local_record.get("event_id")
-            user_id = local_record.get("user_id")
-            
-            if event_id and user_id:
-                event_oid = ObjectId(event_id)
-                user_oid = ObjectId(user_id)
-                
-                # Update refund record
-                mongo.refunds.update_one(
-                    {"finternet_id": finternet_id},
-                    {"$set": {
-                        "status": "completed",
-                        "completed_at": datetime.utcnow()
-                    }}
-                )
-                
-                # Zero out balance
-                mongo.participants.update_one(
-                    {"event_id": event_oid, "user_id": user_oid},
-                    {"$set": {"balance": 0}}
-                )
-                
-                mongo.activities.insert_one({
-                    "type": "refund_completed",
-                    "event_id": event_oid,
-                    "user_id": user_oid,
-                    "amount": float(local_record.get("amount", 0)),
-                    "description": "Refund completed (webhook)",
-                    "created_at": datetime.utcnow()
-                })
-    
-    return jsonify({"received": True})
+    except Exception as e:
+        return jsonify({"error": f"Failed to simulate payment: {str(e)}"}), 500
