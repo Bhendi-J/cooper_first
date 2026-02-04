@@ -3,7 +3,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { authApi, usersApi, eventsApi, expensesApi } from "@/lib/api";
+import { authApi, usersApi, eventsApi, expensesApi, friendsApi } from "@/lib/api";
 
 export default function ApiTestPage() {
   const [token, setToken] = useState(localStorage.getItem("token") || "");
@@ -28,6 +28,11 @@ export default function ApiTestPage() {
 
   // Participant state
   const [participantUserId, setParticipantUserId] = useState("");
+
+  // Friends state
+  const [friendEmail, setFriendEmail] = useState("");
+  const [friendRequestId, setFriendRequestId] = useState("");
+  const [inviteCode, setInviteCode] = useState("");
 
   const handleResponse = (data: unknown) => {
     setResponse(JSON.stringify(data, null, 2));
@@ -76,7 +81,20 @@ export default function ApiTestPage() {
   };
 
   const handleRegister = async () => {
-    await callApi(() => authApi.register({ name, email, password }));
+    setLoading(true);
+    try {
+      const res = await authApi.register({ name, email, password });
+      const data = res.data;
+      if (data.access_token) {
+        localStorage.setItem("token", data.access_token);
+        setToken(data.access_token);
+      }
+      handleResponse(data);
+    } catch (err) {
+      handleError(err);
+    } finally {
+      setLoading(false);
+    }
   };
 
   const handleLogout = () => {
@@ -119,9 +137,10 @@ export default function ApiTestPage() {
           </CardHeader>
           <CardContent>
             <Tabs defaultValue="auth">
-              <TabsList className="grid grid-cols-4 w-full">
+              <TabsList className="grid grid-cols-5 w-full">
                 <TabsTrigger value="auth">Auth</TabsTrigger>
                 <TabsTrigger value="events">Events</TabsTrigger>
+                <TabsTrigger value="friends">Friends</TabsTrigger>
                 <TabsTrigger value="expenses">Expenses</TabsTrigger>
                 <TabsTrigger value="users">Users</TabsTrigger>
               </TabsList>
@@ -145,29 +164,87 @@ export default function ApiTestPage() {
                 <div className="space-y-2">
                   <Input placeholder="Event Name" value={eventName} onChange={(e) => setEventName(e.target.value)} />
                   <Input placeholder="Description" value={eventDescription} onChange={(e) => setEventDescription(e.target.value)} />
-                  <Input placeholder="Budget" type="number" value={eventBudget} onChange={(e) => setEventBudget(e.target.value)} />
-                  <Input placeholder="Event ID (for get/update)" value={eventId} onChange={(e) => setEventId(e.target.value)} />
+                  <Input placeholder="Event ID (for get/join/deposit)" value={eventId} onChange={(e) => setEventId(e.target.value)} />
                 </div>
                 <div className="flex gap-2 flex-wrap">
-                  <Button onClick={() => callApi(() => eventsApi.create({ name: eventName, description: eventDescription, budget: parseFloat(eventBudget) }))} disabled={loading}>
+                  <Button onClick={() => callApi(() => eventsApi.create({ name: eventName, description: eventDescription }))} disabled={loading}>
                     Create Event
                   </Button>
                   <Button onClick={() => callApi(() => eventsApi.getAll())} disabled={loading}>
-                    Get All Events
+                    Get My Events
                   </Button>
                   <Button onClick={() => callApi(() => eventsApi.getById(eventId))} disabled={loading || !eventId}>
-                    Get Event
+                    Get Event Details
                   </Button>
                 </div>
                 <div className="border-t pt-4 space-y-2">
-                  <h4 className="font-medium">Participants</h4>
-                  <Input placeholder="User ID to add" value={participantUserId} onChange={(e) => setParticipantUserId(e.target.value)} />
+                  <h4 className="font-medium">Join & Deposit</h4>
+                  <Input placeholder="Deposit Amount" type="number" value={eventBudget} onChange={(e) => setEventBudget(e.target.value)} />
                   <div className="flex gap-2">
-                    <Button onClick={() => callApi(() => eventsApi.addParticipant(eventId, participantUserId))} disabled={loading || !eventId || !participantUserId}>
-                      Add Participant
+                    <Button onClick={() => callApi(() => eventsApi.join(eventId))} disabled={loading || !eventId}>
+                      Join Event
                     </Button>
-                    <Button onClick={() => callApi(() => eventsApi.getParticipants(eventId))} disabled={loading || !eventId}>
-                      Get Participants
+                    <Button onClick={() => callApi(() => eventsApi.deposit(eventId, parseFloat(eventBudget)))} disabled={loading || !eventId}>
+                      Deposit
+                    </Button>
+                  </div>
+                </div>
+                <div className="border-t pt-4 space-y-2">
+                  <h4 className="font-medium">Invite Link & QR</h4>
+                  <Input placeholder="Invite Code (e.g., XYZAB123)" value={inviteCode} onChange={(e) => setInviteCode(e.target.value)} />
+                  <div className="flex gap-2 flex-wrap">
+                    <Button onClick={() => callApi(() => eventsApi.getInviteLink(eventId))} disabled={loading || !eventId}>
+                      Get Invite Link
+                    </Button>
+                    <Button onClick={() => callApi(() => eventsApi.getEventByCode(inviteCode))} disabled={loading || !inviteCode}>
+                      Preview by Code
+                    </Button>
+                    <Button onClick={() => callApi(() => eventsApi.joinByCode(inviteCode))} disabled={loading || !inviteCode}>
+                      Join by Code
+                    </Button>
+                  </div>
+                </div>
+              </TabsContent>
+
+              {/* Friends Tab */}
+              <TabsContent value="friends" className="space-y-4">
+                <div className="space-y-2">
+                  <Input placeholder="Friend's Email" value={friendEmail} onChange={(e) => setFriendEmail(e.target.value)} />
+                  <Input placeholder="Request/Friend ID" value={friendRequestId} onChange={(e) => setFriendRequestId(e.target.value)} />
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                  <Button onClick={() => callApi(() => friendsApi.getAll())} disabled={loading}>
+                    My Friends
+                  </Button>
+                  <Button onClick={() => callApi(() => friendsApi.getRequests())} disabled={loading}>
+                    Friend Requests
+                  </Button>
+                  <Button onClick={() => callApi(() => friendsApi.sendRequest({ email: friendEmail }))} disabled={loading || !friendEmail}>
+                    Send Request
+                  </Button>
+                </div>
+                <div className="border-t pt-4 space-y-2">
+                  <h4 className="font-medium">Manage Requests</h4>
+                  <div className="flex gap-2 flex-wrap">
+                    <Button onClick={() => callApi(() => friendsApi.acceptRequest(friendRequestId))} disabled={loading || !friendRequestId} variant="default">
+                      Accept Request
+                    </Button>
+                    <Button onClick={() => callApi(() => friendsApi.rejectRequest(friendRequestId))} disabled={loading || !friendRequestId} variant="outline">
+                      Reject Request
+                    </Button>
+                    <Button onClick={() => callApi(() => friendsApi.remove(friendRequestId))} disabled={loading || !friendRequestId} variant="destructive">
+                      Remove Friend
+                    </Button>
+                  </div>
+                </div>
+                <div className="border-t pt-4 space-y-2">
+                  <h4 className="font-medium">Event Invites</h4>
+                  <div className="flex gap-2 flex-wrap">
+                    <Button onClick={() => callApi(() => eventsApi.getInvites())} disabled={loading}>
+                      My Event Invites
+                    </Button>
+                    <Button onClick={() => callApi(() => eventsApi.invite(eventId, { email: friendEmail }))} disabled={loading || !eventId || !friendEmail}>
+                      Invite to Event
                     </Button>
                   </div>
                 </div>

@@ -19,6 +19,21 @@ api.interceptors.request.use((config) => {
   return config;
 });
 
+// Handle 401 responses (token expired/invalid)
+api.interceptors.response.use(
+  (response) => response,
+  (error) => {
+    if (error.response?.status === 401 && localStorage.getItem("token")) {
+      // Token is invalid, but don't clear on /auth/me (initial check)
+      const url = error.config?.url || "";
+      if (!url.includes("/auth/me")) {
+        console.warn("Token expired or invalid");
+      }
+    }
+    return Promise.reject(error);
+  }
+);
+
 // Auth API calls
 export const authApi = {
   login: (email: string, password: string) =>
@@ -46,15 +61,35 @@ export const usersApi = {
 export const eventsApi = {
   getAll: () => api.get("/events/"),
   getById: (id: string) => api.get(`/events/${id}`),
-  create: (data: { name: string; description?: string; budget?: number }) =>
+  create: (data: { name: string; description?: string; start_date?: string; end_date?: string }) =>
     api.post("/events/", data),
-  update: (id: string, data: { name?: string; description?: string }) =>
-    api.put(`/events/${id}`, data),
-  delete: (id: string) => api.delete(`/events/${id}`),
-  addParticipant: (eventId: string, userId: string) =>
-    api.post(`/events/${eventId}/participants`, { user_id: userId }),
-  getParticipants: (eventId: string) =>
-    api.get(`/events/${eventId}/participants`),
+  join: (eventId: string) => api.post(`/events/${eventId}/join`),
+  joinByCode: (inviteCode: string) => api.post(`/events/join/${inviteCode}`),
+  getEventByCode: (inviteCode: string) => api.get(`/events/join/${inviteCode}`),
+  getInviteLink: (eventId: string) => api.get(`/events/${eventId}/invite-link`),
+  toggleInviteLink: (eventId: string, data: { enabled?: boolean; regenerate?: boolean }) =>
+    api.put(`/events/${eventId}/invite-link`, data),
+  deposit: (eventId: string, amount: number) =>
+    api.post(`/events/${eventId}/deposit`, { amount }),
+  invite: (eventId: string, data: { email?: string; user_id?: string }) =>
+    api.post(`/events/${eventId}/invite`, data),
+  getInvites: () => api.get("/events/invites"),
+  acceptInvite: (inviteId: string) => api.post(`/events/invites/${inviteId}/accept`),
+  rejectInvite: (inviteId: string) => api.post(`/events/invites/${inviteId}/reject`),
+};
+
+// Friends API calls
+export const friendsApi = {
+  getAll: () => api.get("/events/friends"),
+  getRequests: () => api.get("/events/friends/requests"),
+  sendRequest: (data: { email?: string; user_id?: string }) =>
+    api.post("/events/friends/request", data),
+  acceptRequest: (requestId: string) =>
+    api.post(`/events/friends/request/${requestId}/accept`),
+  rejectRequest: (requestId: string) =>
+    api.post(`/events/friends/request/${requestId}/reject`),
+  remove: (friendId: string) =>
+    api.delete(`/events/friends/${friendId}/remove`),
 };
 
 // Expenses API calls
