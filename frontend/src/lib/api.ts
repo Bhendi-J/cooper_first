@@ -211,10 +211,17 @@ export interface CreateEventData {
   description?: string;
   start_date?: string;
   end_date?: string;
+  creator_deposit?: number;
+  use_wallet?: boolean;  // If true, deduct deposit from wallet instead of payment gateway
   rules?: {
     spending_limit?: number;
     approval_required?: boolean;
     auto_approve_under?: number;
+    min_deposit?: number;
+    max_deposit?: number;
+    max_expense_per_transaction?: number;
+    min_expense_per_transaction?: number;
+    approval_required_threshold?: number;
   };
 }
 
@@ -223,8 +230,9 @@ export const eventsAPI = {
   create: (data: CreateEventData) =>
     api.post<{ event: Event }>('/events/', data),
 
-  // List all events for the current user
-  list: () => api.get<{ events: Event[] }>('/events/'),
+  // List all events for the current user with pagination
+  list: (params?: { page?: number; limit?: number; sort?: string; order?: 'asc' | 'desc'; status?: string }) =>
+    api.get<{ events: Event[]; pagination: Pagination }>('/events/', { params }),
 
   // Get a single event by ID
   get: (id: string) => api.get<{ event: Event }>(`/events/${id}`),
@@ -246,15 +254,16 @@ export const eventsAPI = {
       `/events/join/${code}`
     ),
 
-  // Join an event using invite code
-  joinByCode: (code: string) =>
+  // Join an event using invite code with optional deposit
+  joinByCode: (code: string, data?: { deposit_amount?: number }) =>
     api.post<{ 
       message: string; 
       event_id?: string; 
       event_name?: string;
       status?: 'pending' | 'approved';
       request_id?: string;
-    }>(`/events/join/${code}`),
+      deposit_amount?: number;
+    }>(`/events/join/${code}`, data || {}),
 
   // Get pending join requests for an event (creator only)
   getJoinRequests: (eventId: string) =>
@@ -442,6 +451,50 @@ export const expensesAPI = {
   // Cancel a pending expense (expense creator only)
   cancel: (expenseId: string) =>
     api.post<{ message: string; expense_id: string }>(`/expenses/${expenseId}/cancel`),
+  
+  // =====================
+  // CASH EXPENSE METHODS
+  // =====================
+  
+  // Add a cash expense that requires approval from all members
+  addCash: (data: CreateExpenseData) =>
+    api.post<{
+      expense: Expense;
+      status: 'pending_member_approval' | 'approved';
+      members_pending?: string[];
+      message: string;
+    }>('/expenses/cash', data),
+  
+  // Approve a cash expense (as a member in the split)
+  approveCash: (expenseId: string) =>
+    api.post<{
+      message: string;
+      status: 'pending_member_approval' | 'approved';
+      members_remaining?: number;
+      all_approved: boolean;
+    }>(`/expenses/cash/${expenseId}/approve`),
+  
+  // Reject a cash expense (as a member in the split)
+  rejectCash: (expenseId: string, reason?: string) =>
+    api.post<{ message: string; status: 'rejected' }>(`/expenses/cash/${expenseId}/reject`, { reason }),
+  
+  // Get pending cash approvals for the current user
+  getPendingCashApprovals: () =>
+    api.get<{
+      pending_approvals: Array<{
+        _id: string;
+        event_id: string;
+        event_name: string;
+        payer_id: string;
+        payer_name: string;
+        amount: number;
+        description: string;
+        your_share: number;
+        created_at: string;
+        members_approved: number;
+        members_pending: number;
+      }>;
+    }>('/expenses/cash/pending'),
 };
 
 // =====================
@@ -499,6 +552,8 @@ export const dashboardsAPI = {
 export interface CategoryTotal {
   category_id: string;
   category_name: string;
+  icon: string;
+  color: string;
   total: number;
   count: number;
 }
@@ -509,9 +564,42 @@ export interface DailyExpense {
   count: number;
 }
 
+export interface WeeklyComparison {
+  this_week: number;
+  last_week: number;
+  change_percent: number;
+}
+
+export interface TopEvent {
+  event_id: string;
+  event_name: string;
+  total: number;
+}
+
+export interface MonthlyTrend {
+  month: string;
+  total: number;
+  count: number;
+}
+
 export interface AnalyticsOverview {
   category_totals: CategoryTotal[];
   daily_expenses: DailyExpense[];
+  weekly_comparison: WeeklyComparison;
+  top_events: TopEvent[];
+  monthly_trend: MonthlyTrend[];
+  total_expenses: number;
+  avg_expense: number;
+  expense_count: number;
+}
+
+export interface Pagination {
+  page: number;
+  limit: number;
+  total: number;
+  total_pages: number;
+  has_next: boolean;
+  has_prev: boolean;
 }
 
 export const analyticsAPI = {
@@ -1037,4 +1125,120 @@ export const paymentsAPI = {
       amount: number;
       currency: string;
     }>('/payments/debts/settle', { debt_id: debtId, amount }),
+};
+
+// =====================
+// WELLNESS API - Supportive financial companion
+// =====================
+
+export interface WellnessStatus {
+  label: string;
+  emoji: string;
+  color: string;
+  description: string;
+}
+
+export interface WellnessInsight {
+  type: 'positive' | 'neutral' | 'info';
+  icon: string;
+  message: string;
+}
+
+export interface SpendingCategory {
+  category: string;
+  emoji: string;
+  amount: number;
+  percentage: number;
+}
+
+export interface WellnessSummary {
+  wellness_score: number;
+  wellness_status: WellnessStatus;
+  spending_summary: {
+    last_30_days: number;
+    transaction_count: number;
+    average_transaction: number;
+  };
+  pending_summary: {
+    total_pending: number;
+    pending_count: number;
+    message: string;
+  };
+  positive_actions: {
+    payments_made: number;
+    payments_count: number;
+    message: string;
+  };
+  spending_breakdown: SpendingCategory[];
+  insights: WellnessInsight[];
+  encouragement: string;
+}
+
+export interface WellnessReminder {
+  type: string;
+  priority: string;
+  icon: string;
+  title: string;
+  message: string;
+  action?: string;
+  event_id?: string;
+  dismissible: boolean;
+}
+
+export interface ReceiptScanResult {
+  amount?: number;
+  currency?: string;
+  description?: string;
+  date?: string;
+  merchant?: string;
+  category?: string;
+  items?: Array<{ name: string; price: number }>;
+  error?: string;
+}
+
+export const wellnessApi = {
+  // Get personalized wellness summary
+  getSummary: () =>
+    api.get<{ summary: WellnessSummary; privacy_note: string }>('/wellness/summary'),
+
+  // Get gentle reminders (never urgent)
+  getReminders: () =>
+    api.get<{ reminders: WellnessReminder[]; message: string }>('/wellness/reminders'),
+
+  // Dismiss a reminder
+  dismissReminder: (reminderType: string, referenceId?: string) =>
+    api.post('/wellness/dismiss-reminder', { 
+      reminder_type: reminderType, 
+      reference_id: referenceId 
+    }),
+
+  // Get spending breakdown by category
+  getSpendingBreakdown: (days?: number) =>
+    api.get<{
+      period_days: number;
+      total_spent: number;
+      transaction_count: number;
+      breakdown: SpendingCategory[];
+      insights: WellnessInsight[];
+    }>('/wellness/spending-breakdown', { params: { days } }),
+};
+
+// =====================
+// OCR / RECEIPT SCANNING
+// =====================
+
+export const receiptApi = {
+  // Scan a receipt image and extract expense details
+  scanReceipt: async (file: File): Promise<ReceiptScanResult> => {
+    const formData = new FormData();
+    formData.append('receipt', file);
+    
+    const response = await api.post<ReceiptScanResult>('/expenses/scan-receipt', formData, {
+      headers: {
+        'Content-Type': 'multipart/form-data',
+      },
+    });
+    
+    return response.data;
+  },
 };

@@ -5,6 +5,7 @@ import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Textarea } from '@/components/ui/textarea';
+import { ReceiptScanner } from '@/components/ReceiptScanner';
 import {
   Wallet,
   ArrowLeft,
@@ -16,9 +17,11 @@ import {
   Receipt,
   Banknote,
   CreditCard,
+  Camera,
+  X,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
-import { expensesAPI, eventsAPI, Event, Participant } from '@/lib/api';
+import { expensesAPI, eventsAPI, Event, Participant, ReceiptScanResult } from '@/lib/api';
 
 // Default categories (backend may provide these)
 const defaultCategories = [
@@ -38,6 +41,7 @@ export default function ExpenseAdd() {
   const [isLoadingEvent, setIsLoadingEvent] = useState(true);
   const [event, setEvent] = useState<Event | null>(null);
   const [categories] = useState(defaultCategories);
+  const [showScanner, setShowScanner] = useState(false);
 
   const [formData, setFormData] = useState({
     amount: '',
@@ -79,6 +83,21 @@ export default function ExpenseAdd() {
 
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => {
     setFormData({ ...formData, [e.target.name]: e.target.value });
+  };
+
+  const handleReceiptScan = (result: ReceiptScanResult) => {
+    // Pre-fill form with scanned data
+    setFormData(prev => ({
+      ...prev,
+      amount: result.amount?.toString() || prev.amount,
+      description: result.description || result.merchant || prev.description,
+      category: result.category || prev.category,
+    }));
+    setShowScanner(false);
+    toast({
+      title: 'Receipt scanned!',
+      description: 'Expense details have been auto-filled.',
+    });
   };
 
   const toggleMember = (memberId: string) => {
@@ -202,22 +221,46 @@ export default function ExpenseAdd() {
     <div className="min-h-screen bg-background">
       {/* Navigation */}
       <nav className="sticky top-0 z-50 bg-background/80 backdrop-blur-xl border-b border-border">
-        <div className="container mx-auto px-6 py-4 flex items-center gap-4">
-          <Link to={`/events/${id}`}>
-            <Button variant="ghost" size="icon">
-              <ArrowLeft className="w-5 h-5" />
-            </Button>
-          </Link>
-          <div className="flex items-center gap-2">
-            <div className="w-10 h-10 rounded-xl gradient-primary flex items-center justify-center">
-              <Receipt className="w-5 h-5 text-primary-foreground" />
+        <div className="container mx-auto px-6 py-4 flex items-center justify-between">
+          <div className="flex items-center gap-4">
+            <Link to={`/events/${id}`}>
+              <Button variant="ghost" size="icon">
+                <ArrowLeft className="w-5 h-5" />
+              </Button>
+            </Link>
+            <div className="flex items-center gap-2">
+              <div className="w-10 h-10 rounded-xl gradient-primary flex items-center justify-center">
+                <Receipt className="w-5 h-5 text-primary-foreground" />
+              </div>
+              <span className="text-xl font-display font-bold">Add Expense</span>
             </div>
-            <span className="text-xl font-display font-bold">Add Expense</span>
           </div>
+          <Button 
+            variant="outline" 
+            size="sm"
+            onClick={() => setShowScanner(!showScanner)}
+          >
+            <Camera className="w-4 h-4 mr-2" />
+            Scan Receipt
+          </Button>
         </div>
       </nav>
 
       <main className="container mx-auto px-6 py-8 max-w-2xl">
+        {/* Receipt Scanner Modal */}
+        {showScanner && (
+          <motion.div
+            initial={{ opacity: 0, y: -20 }}
+            animate={{ opacity: 1, y: 0 }}
+            className="mb-6"
+          >
+            <ReceiptScanner 
+              onScanComplete={handleReceiptScan}
+              onCancel={() => setShowScanner(false)}
+            />
+          </motion.div>
+        )}
+
         <form onSubmit={handleSubmit} className="space-y-8">
           {/* Amount */}
           <motion.div

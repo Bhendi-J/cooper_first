@@ -49,6 +49,7 @@ def create_app(config_class=Config):
     from app.wallets.routes import bp as wallets_bp
     from app.settlements.routes import bp as settlements_bp
     from app.notifications.routes import bp as notifications_bp
+    from app.wellness.routes import wellness_bp
     
     app.register_blueprint(expenses_bp, url_prefix='/api/v1/expenses')
     app.register_blueprint(events_bp, url_prefix='/api/v1/events')
@@ -60,6 +61,7 @@ def create_app(config_class=Config):
     app.register_blueprint(wallets_bp, url_prefix='/api/v1/wallets')
     app.register_blueprint(settlements_bp, url_prefix='/api/v1/settlements')
     app.register_blueprint(notifications_bp, url_prefix='/api/v1/notifications')
+    app.register_blueprint(wellness_bp, url_prefix='/api/v1/wellness')
 
     return app
 

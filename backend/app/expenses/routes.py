@@ -13,6 +13,14 @@ from app.core import (
     PoolService, WalletFallbackService, NotificationService, ReliabilityService
 )
 
+# Import OCR service (optional - degrades gracefully if unavailable)
+try:
+    from app.services.gemini_ocr import get_ocr_service
+    OCR_AVAILABLE = True
+except ImportError:
+    OCR_AVAILABLE = False
+    print("Note: Gemini OCR service not available")
+
 expenses_bp = Blueprint("expenses", __name__)
 
 @expenses_bp.route("/", methods=["POST"])
@@ -419,6 +427,66 @@ def verify_expense(expense_id):
     })
 
 
+# ------------------ RECEIPT OCR ENDPOINT ------------------
+
+@expenses_bp.route("/scan-receipt", methods=["POST"])
+@jwt_required()
+def scan_receipt():
+    """
+    Scan a receipt image and extract expense details using AI.
+    
+    Accepts multipart form data with 'receipt' file.
+    
+    Returns:
+    {
+        "amount": 123.45,
+        "currency": "INR",
+        "description": "Restaurant bill",
+        "date": "2024-01-15",
+        "merchant": "Pizza Hut",
+        "category": "food",
+        "items": [{"name": "Pizza", "price": 100.00}, ...]
+    }
+    """
+    if not OCR_AVAILABLE:
+        return jsonify({"error": "OCR service not available"}), 503
+    
+    # Check if file is in request
+    if 'receipt' not in request.files:
+        return jsonify({"error": "No receipt file provided"}), 400
+    
+    file = request.files['receipt']
+    
+    if file.filename == '':
+        return jsonify({"error": "No file selected"}), 400
+    
+    # Check file type
+    allowed_extensions = {'png', 'jpg', 'jpeg', 'gif', 'webp'}
+    file_ext = file.filename.rsplit('.', 1)[1].lower() if '.' in file.filename else ''
+    if file_ext not in allowed_extensions:
+        return jsonify({"error": f"Invalid file type. Allowed: {', '.join(allowed_extensions)}"}), 400
+    
+    try:
+        # Read file bytes
+        image_bytes = file.read()
+        
+        # Get OCR service and parse receipt
+        ocr_service = get_ocr_service()
+        if not ocr_service.is_available():
+            return jsonify({"error": "OCR service not configured. Please set GEMINI_API_KEY."}), 503
+        
+        result = ocr_service.parse_receipt(image_bytes)
+        
+        if "error" in result:
+            return jsonify(result), 400
+        
+        return jsonify(result), 200
+        
+    except Exception as e:
+        print(f"Error scanning receipt: {e}")
+        return jsonify({"error": "Failed to process receipt"}), 500
+
+
 # ------------------ EXPENSE APPROVAL ENDPOINTS ------------------
 
 @expenses_bp.route("/pending-approvals/<event_id>", methods=["GET"])
@@ -742,10 +810,13 @@ def confirm_expense_payment(pending_id):
     result = mongo.expenses.insert_one(expense)
     expense_id = str(result.inserted_id)
     
-    # Update event total spent
-    mongo.events.update_one(
-        {"_id": pending["event_id"]},
-        {"$inc": {"total_spent": amount}}
+    # Deduct from pool and update participant balances using PoolService
+    # This ensures consistent balance updates across all expense creation paths
+    PoolService.deduct_expense(
+        event_id=event_id,
+        expense_id=expense_id,
+        total_amount=amount,
+        splits=splits
     )
     
     # Mark pending expense as completed
@@ -775,3 +846,443 @@ def confirm_expense_payment(pending_id):
         "expense_id": expense_id,
         "amount": amount
     })
+
+
+# =====================
+# CASH EXPENSE ROUTES
+# =====================
+
+@expenses_bp.route("/cash", methods=["POST"])
+@jwt_required()
+def add_cash_expense():
+    """
+    Add a cash expense that requires approval from all members involved in the split.
+    
+    Flow:
+    1. User pays cash and records expense
+    2. All members involved in the split must approve to verify the cash payment
+    3. After all approvals:
+       - Payer gets reimbursed (others' shares) to their wallet
+       - All members' event balances are deducted by their shares
+    
+    Request body:
+    {
+        "event_id": "...",
+        "amount": 100.00,
+        "description": "Dinner paid in cash",
+        "split_type": "equal|exact",
+        "split_details": {...},
+        "selected_members": ["user_id_1", "user_id_2"]  // Optional
+    }
+    """
+    user_id = get_jwt_identity()
+    data = request.get_json()
+
+    event_id = str(data["event_id"])
+    amount = float(data["amount"])
+    description = data.get("description", "")
+    split_type = data.get("split_type", "equal")
+    split_details = data.get("split_details", {})
+    selected_members = data.get("selected_members")
+
+    # Get event
+    event = mongo.events.find_one({"_id": ObjectId(event_id)})
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+
+    # Check if user is authorized participant
+    participant = mongo.participants.find_one({
+        "event_id": ObjectId(event_id),
+        "user_id": ObjectId(user_id),
+        "status": "active"
+    })
+    if not participant:
+        return jsonify({"error": "Not an active participant"}), 403
+
+    # Get all active participants
+    all_participants = list(
+        mongo.participants.find(
+            {"event_id": ObjectId(event_id), "status": "active"}
+        )
+    )
+
+    # Deduplicate participants
+    seen_user_ids = set()
+    unique_participants = []
+    for p in all_participants:
+        uid = str(p["user_id"])
+        if uid not in seen_user_ids:
+            seen_user_ids.add(uid)
+            unique_participants.append(p)
+    all_participants = unique_participants
+
+    # Filter participants if selected_members is provided
+    if selected_members and len(selected_members) > 0:
+        participants = [p for p in all_participants if str(p["user_id"]) in selected_members]
+        if not participants:
+            return jsonify({"error": "No valid participants selected"}), 400
+    else:
+        participants = all_participants
+
+    # Calculate splits
+    participant_ids = [str(p["user_id"]) for p in participants]
+    
+    if split_type == "equal":
+        split_amounts = ExpenseDistributionService.calculate_equal_split(amount, participant_ids)
+    elif split_type == "exact":
+        exact_amounts = split_details.get("amounts", {})
+        split_amounts, split_error = ExpenseDistributionService.calculate_exact_split(amount, exact_amounts)
+        if split_error:
+            return jsonify({"error": split_error}), 400
+    else:
+        split_amounts = ExpenseDistributionService.calculate_equal_split(amount, participant_ids)
+
+    # Build splits array with approval tracking
+    split_amounts_dict = {s["user_id"]: s["amount"] for s in split_amounts}
+    
+    splits = []
+    members_needing_approval = []
+    payer_share = 0
+    
+    for p in participants:
+        pid = str(p["user_id"])
+        share_amount = float(split_amounts_dict.get(pid, 0))
+        
+        # Payer auto-approves their own share
+        is_payer = pid == user_id
+        if is_payer:
+            payer_share = share_amount
+        
+        splits.append({
+            "user_id": pid,
+            "amount": share_amount,
+            "status": "approved" if is_payer else "pending_approval",
+            "approved_at": datetime.utcnow() if is_payer else None
+        })
+        
+        if not is_payer:
+            members_needing_approval.append(pid)
+
+    # Calculate reimbursement amount (what payer gets back from others)
+    reimbursement_amount = amount - payer_share
+
+    # Create the cash expense record
+    expense = {
+        "event_id": ObjectId(event_id),
+        "payer_id": ObjectId(user_id),
+        "amount": amount,
+        "description": description,
+        "payment_method": "cash",
+        "split_type": split_type,
+        "splits": splits,
+        "status": "pending_member_approval",
+        "approval_status": "pending_members",
+        "members_pending_approval": members_needing_approval,
+        "members_approved": [user_id],  # Payer auto-approves
+        "payer_share": payer_share,
+        "reimbursement_amount": reimbursement_amount,
+        "created_at": datetime.utcnow()
+    }
+
+    result = mongo.expenses.insert_one(expense)
+    expense_id = str(result.inserted_id)
+
+    # Notify all members who need to approve
+    for member_id in members_needing_approval:
+        member = mongo.users.find_one({"_id": ObjectId(member_id)})
+        payer = mongo.users.find_one({"_id": ObjectId(user_id)})
+        
+        # Get this member's share
+        member_share = next((s["amount"] for s in splits if s["user_id"] == member_id), 0)
+        
+        NotificationService.create_notification(
+            user_id=member_id,
+            title="Cash Payment Verification Required",
+            message=f"{payer.get('name', 'Someone')} paid ₹{amount:.2f} in cash for '{description}'. Your share is ₹{member_share:.2f}. Please verify this payment.",
+            notification_type="cash_expense_approval",
+            reference_id=expense_id,
+            reference_type="expense",
+            event_id=event_id
+        )
+
+    # Check if this is a solo expense (payer is the only participant)
+    if len(members_needing_approval) == 0:
+        # Auto-complete for solo expenses
+        _process_approved_cash_expense(expense_id)
+        return jsonify({
+            "expense_id": expense_id,
+            "status": "approved",
+            "message": "Cash expense recorded and processed (solo expense)"
+        }), 201
+
+    expense["_id"] = expense_id
+    expense["event_id"] = event_id
+    expense["payer_id"] = user_id
+
+    return jsonify({
+        "expense": expense,
+        "status": "pending_member_approval",
+        "members_pending": members_needing_approval,
+        "message": f"Cash expense created. Waiting for {len(members_needing_approval)} member(s) to verify."
+    }), 201
+
+
+@expenses_bp.route("/cash/<expense_id>/approve", methods=["POST"])
+@jwt_required()
+def approve_cash_expense(expense_id):
+    """
+    Approve a cash expense as a member involved in the split.
+    
+    When all members approve, the expense is processed:
+    - Payer's wallet is credited with reimbursement (others' shares)
+    - All members' event balances are deducted
+    """
+    user_id = get_jwt_identity()
+
+    # Get expense
+    expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+    if not expense:
+        return jsonify({"error": "Expense not found"}), 404
+
+    if expense.get("payment_method") != "cash":
+        return jsonify({"error": "This is not a cash expense"}), 400
+
+    if expense.get("status") not in ["pending_member_approval"]:
+        return jsonify({"error": f"Expense is not pending approval (status: {expense.get('status')})"}), 400
+
+    # Check if user is in the splits
+    user_split = next((s for s in expense.get("splits", []) if s["user_id"] == user_id), None)
+    if not user_split:
+        return jsonify({"error": "You are not part of this expense split"}), 403
+
+    # Check if already approved
+    if user_split.get("status") == "approved":
+        return jsonify({"error": "You have already approved this expense"}), 400
+
+    # Update user's approval in splits
+    mongo.expenses.update_one(
+        {"_id": ObjectId(expense_id), "splits.user_id": user_id},
+        {
+            "$set": {
+                "splits.$.status": "approved",
+                "splits.$.approved_at": datetime.utcnow()
+            },
+            "$addToSet": {"members_approved": user_id},
+            "$pull": {"members_pending_approval": user_id}
+        }
+    )
+
+    # Refresh expense
+    expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+    members_pending = expense.get("members_pending_approval", [])
+
+    # Check if all members have approved
+    if len(members_pending) == 0:
+        # All approved - process the expense
+        success, message = _process_approved_cash_expense(expense_id)
+        if success:
+            return jsonify({
+                "message": "Expense approved and processed successfully",
+                "status": "approved",
+                "all_approved": True
+            })
+        else:
+            return jsonify({"error": message}), 500
+
+    return jsonify({
+        "message": "Your approval recorded",
+        "status": "pending_member_approval",
+        "members_remaining": len(members_pending),
+        "all_approved": False
+    })
+
+
+@expenses_bp.route("/cash/<expense_id>/reject", methods=["POST"])
+@jwt_required()
+def reject_cash_expense(expense_id):
+    """
+    Reject a cash expense as a member involved in the split.
+    
+    If any member rejects, the expense is cancelled.
+    """
+    user_id = get_jwt_identity()
+    data = request.get_json() or {}
+    reason = data.get("reason", "No reason provided")
+
+    # Get expense
+    expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+    if not expense:
+        return jsonify({"error": "Expense not found"}), 404
+
+    if expense.get("payment_method") != "cash":
+        return jsonify({"error": "This is not a cash expense"}), 400
+
+    if expense.get("status") not in ["pending_member_approval"]:
+        return jsonify({"error": "Expense is not pending approval"}), 400
+
+    # Check if user is in the splits
+    user_split = next((s for s in expense.get("splits", []) if s["user_id"] == user_id), None)
+    if not user_split:
+        return jsonify({"error": "You are not part of this expense split"}), 403
+
+    # Get rejector info
+    rejector = mongo.users.find_one({"_id": ObjectId(user_id)})
+    
+    # Mark expense as rejected
+    mongo.expenses.update_one(
+        {"_id": ObjectId(expense_id)},
+        {
+            "$set": {
+                "status": "rejected",
+                "approval_status": "rejected",
+                "rejected_by": ObjectId(user_id),
+                "rejection_reason": reason,
+                "rejected_at": datetime.utcnow()
+            }
+        }
+    )
+
+    # Notify payer about rejection
+    payer_id = str(expense["payer_id"])
+    NotificationService.create_notification(
+        user_id=payer_id,
+        title="Cash Expense Rejected",
+        message=f"{rejector.get('name', 'A member')} rejected your cash expense of ₹{expense['amount']:.2f}. Reason: {reason}",
+        notification_type="cash_expense_rejected",
+        reference_id=expense_id,
+        reference_type="expense",
+        event_id=str(expense["event_id"])
+    )
+
+    return jsonify({
+        "message": "Expense rejected",
+        "status": "rejected"
+    })
+
+
+@expenses_bp.route("/cash/pending", methods=["GET"])
+@jwt_required()
+def get_pending_cash_approvals():
+    """
+    Get all cash expenses pending the current user's approval.
+    """
+    user_id = get_jwt_identity()
+
+    # Find expenses where user is in pending approval list
+    pending_expenses = list(mongo.expenses.find({
+        "payment_method": "cash",
+        "status": "pending_member_approval",
+        "members_pending_approval": user_id
+    }))
+
+    results = []
+    for exp in pending_expenses:
+        event = mongo.events.find_one({"_id": exp["event_id"]})
+        payer = mongo.users.find_one({"_id": exp["payer_id"]})
+        user_share = next((s["amount"] for s in exp.get("splits", []) if s["user_id"] == user_id), 0)
+        
+        results.append({
+            "_id": str(exp["_id"]),
+            "event_id": str(exp["event_id"]),
+            "event_name": event.get("name") if event else "Unknown",
+            "payer_id": str(exp["payer_id"]),
+            "payer_name": payer.get("name") if payer else "Unknown",
+            "amount": exp["amount"],
+            "description": exp.get("description", ""),
+            "your_share": user_share,
+            "created_at": exp["created_at"].isoformat() if exp.get("created_at") else None,
+            "members_approved": len(exp.get("members_approved", [])),
+            "members_pending": len(exp.get("members_pending_approval", []))
+        })
+
+    return jsonify({"pending_approvals": results})
+
+
+def _process_approved_cash_expense(expense_id: str) -> tuple:
+    """
+    Process a fully approved cash expense.
+    
+    - Deduct shares from all members' event balances
+    - Credit payer's wallet with reimbursement (others' shares)
+    """
+    from app.core import PoolService, WalletFallbackService
+    
+    expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+    if not expense:
+        return False, "Expense not found"
+    
+    event_id = str(expense["event_id"])
+    payer_id = str(expense["payer_id"])
+    amount = expense["amount"]
+    splits = expense.get("splits", [])
+    payer_share = expense.get("payer_share", 0)
+    reimbursement_amount = expense.get("reimbursement_amount", 0)
+    
+    # Calculate reimbursement if not stored
+    if reimbursement_amount == 0:
+        for split in splits:
+            if split["user_id"] != payer_id:
+                reimbursement_amount += float(split.get("amount", 0))
+    
+    # Deduct from pool and all members' balances
+    success, error = PoolService.deduct_expense(
+        event_id=event_id,
+        expense_id=expense_id,
+        total_amount=amount,
+        splits=splits
+    )
+    
+    if not success:
+        # Log error but continue - debts will be created
+        print(f"Pool deduction warning: {error}")
+    
+    # Credit payer's wallet with reimbursement
+    if reimbursement_amount > 0:
+        WalletFallbackService.credit_wallet(
+            user_id=payer_id,
+            amount=reimbursement_amount,
+            source="cash_reimbursement",
+            reference_id=expense_id,
+            notes=f"Reimbursement for cash expense: {expense.get('description', 'Expense')}"
+        )
+    
+    # Update expense status
+    mongo.expenses.update_one(
+        {"_id": ObjectId(expense_id)},
+        {
+            "$set": {
+                "status": "approved",
+                "approval_status": "approved",
+                "approved_at": datetime.utcnow(),
+                "reimbursement_processed": True,
+                "reimbursement_amount_final": reimbursement_amount
+            }
+        }
+    )
+    
+    # Notify payer
+    event = mongo.events.find_one({"_id": ObjectId(event_id)})
+    NotificationService.create_notification(
+        user_id=payer_id,
+        title="Cash Expense Approved",
+        message=f"Your cash expense of ₹{amount:.2f} was approved by all members. ₹{reimbursement_amount:.2f} has been credited to your wallet.",
+        notification_type="cash_expense_approved",
+        reference_id=expense_id,
+        reference_type="expense",
+        event_id=event_id
+    )
+    
+    # Log activity
+    mongo.activities.insert_one({
+        "type": "expense",
+        "event_id": ObjectId(event_id),
+        "user_id": ObjectId(payer_id),
+        "amount": amount,
+        "description": expense.get("description") or "Cash expense",
+        "expense_id": ObjectId(expense_id),
+        "payment_method": "cash",
+        "reimbursement": reimbursement_amount,
+        "created_at": datetime.utcnow()
+    })
+    
+    return True, "Expense processed successfully"

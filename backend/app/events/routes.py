@@ -7,7 +7,7 @@ import hashlib
 from app.extensions import db as mongo
 from app.core import (
     JoinRequestService, RuleEnforcementService, ReliabilityService,
-    NotificationService, PoolService
+    NotificationService, PoolService, WalletFallbackService
 )
 
 events_bp = Blueprint("events", __name__)
@@ -99,25 +99,138 @@ def create_event():
         "updated_at": datetime.utcnow()
     }
 
-    result = mongo.events.insert_one(event)
-
-    mongo.participants.insert_one({
-        "event_id": result.inserted_id,
-        "user_id": user_id,
-        "deposit_amount": 0,
-        "total_spent": 0,
-        "balance": 0,
-        "status": "active",
-        "categories": [],
-        "created_at": datetime.utcnow()
-    })
-
-    event["_id"] = str(result.inserted_id)
-    event["creator_id"] = str(event["creator_id"])
+    # Validate creator's initial deposit if deposit rules are set
+    min_deposit = event_rules.get("min_deposit")
+    max_deposit = event_rules.get("max_deposit")
+    creator_deposit = data.get("creator_deposit", 0)
     
+    if min_deposit is not None:
+        if creator_deposit is None or float(creator_deposit) < float(min_deposit):
+            return jsonify({
+                "error": f"Creator must deposit at least ${min_deposit:.2f} to create this event"
+            }), 400
+    
+    if max_deposit is not None and creator_deposit is not None:
+        if float(creator_deposit) > float(max_deposit):
+            return jsonify({
+                "error": f"Creator deposit cannot exceed ${max_deposit:.2f}"
+            }), 400
+    
+    creator_deposit = float(creator_deposit) if creator_deposit else 0
+    
+    result = mongo.events.insert_one(event)
+    event_id = result.inserted_id
+
+    # Check if user wants to pay deposit from wallet
+    use_wallet = data.get("use_wallet", False)
+    wallet_deducted = False
+    wallet_error = None
+    
+    if creator_deposit > 0 and use_wallet:
+        # Deduct from user's wallet
+        success, error, amount_debited = WalletFallbackService.debit_wallet(
+            user_id=str(user_id),
+            amount=creator_deposit,
+            purpose="event_deposit",
+            reference_id=str(event_id),
+            notes=f"Deposit for event: {data['name']}"
+        )
+        
+        if success:
+            wallet_deducted = True
+            # Credit the event pool and participant balance immediately
+            mongo.participants.insert_one({
+                "event_id": event_id,
+                "user_id": user_id,
+                "deposit_amount": creator_deposit,
+                "total_spent": 0,
+                "balance": creator_deposit,
+                "status": "active",
+                "categories": [],
+                "created_at": datetime.utcnow()
+            })
+            
+            # Update event total pool
+            mongo.events.update_one(
+                {"_id": event_id},
+                {"$inc": {"total_pool": creator_deposit}}
+            )
+        else:
+            wallet_error = error
+            # Fall through to payment gateway if wallet fails
+            use_wallet = False
+
+    # Add creator as participant if not already added (wallet deduction path)
+    if not wallet_deducted:
+        initial_deposit_recorded = 0.0 if creator_deposit > 0 else creator_deposit
+        mongo.participants.insert_one({
+            "event_id": event_id,
+            "user_id": user_id,
+            "deposit_amount": initial_deposit_recorded,
+            "total_spent": 0,
+            "balance": initial_deposit_recorded,
+            "status": "active",
+            "categories": [],
+            "created_at": datetime.utcnow()
+        })
+
+    event["_id"] = str(event_id)
+    event["creator_id"] = str(event["creator_id"])
+    event["creator_deposit"] = creator_deposit
+
     # Include invite link in response
     base_url = request.host_url.rstrip("/")
     event["invite_url"] = f"{base_url}/api/v1/events/join/{invite_code}"
+
+    payment_url = None
+    
+    # If wallet was used, no need for payment gateway
+    if wallet_deducted:
+        event["payment_url"] = None
+        event["deposit_status"] = "paid"
+        event["wallet_used"] = True
+        return jsonify({"event": event}), 201
+    
+    # If wallet deduction failed, include error
+    if wallet_error:
+        event["wallet_error"] = wallet_error
+    
+    if creator_deposit > 0:
+        try:
+            from app.payments.services.finternet import FinternetService
+            finternet = FinternetService()
+            intent_response = finternet.create_payment_intent(
+                amount=creator_deposit,
+                currency="USD",
+                description=f"Event deposit for: {event['name']}",
+                metadata={
+                    "type": "event_deposit",
+                    "event_id": str(event_id),
+                    "user_id": str(user_id),
+                    "deposit_type": "creator"
+                }
+            )
+
+            intent_data = intent_response.get("data", intent_response)
+            intent_id = intent_data.get("id") or intent_response.get("id")
+
+            # Store pending event deposit
+            mongo.event_deposits.insert_one({
+                "event_id": event_id,
+                "user_id": ObjectId(user_id),
+                "intent_id": intent_id,
+                "amount": creator_deposit,
+                "status": "pending",
+                "deposit_type": "creator",
+                "created_at": datetime.utcnow()
+            })
+
+            payment_url = finternet.get_payment_url(intent_response)
+            event["payment_url"] = payment_url
+        except Exception as e:
+            # Payment gateway failed but event is created - continue without redirect
+            print(f"Finternet error: {e}")
+            event["payment_url"] = None
 
     return jsonify({"event": event}), 201
 
@@ -125,20 +238,87 @@ def create_event():
 @events_bp.route("/", methods=["GET"])
 @jwt_required()
 def get_user_events():
+    """
+    Get user's events with pagination and sorting.
+    
+    Query params:
+    - page: Page number (default: 1)
+    - limit: Items per page (default: 10, max: 50)
+    - sort: Sort field (default: created_at)
+    - order: Sort order (asc/desc, default: desc)
+    - status: Filter by status (active/completed/cancelled)
+    """
     user_id = safe_object_id(get_jwt_identity())
-
-    participant_events = mongo.participants.find({"user_id": user_id})
+    
+    # Pagination params
+    page = max(1, int(request.args.get("page", 1)))
+    limit = min(50, max(1, int(request.args.get("limit", 10))))
+    sort_field = request.args.get("sort", "created_at")
+    sort_order = -1 if request.args.get("order", "desc") == "desc" else 1
+    status_filter = request.args.get("status")
+    
+    # Get participant events
+    participant_events = list(mongo.participants.find({"user_id": user_id}))
     event_ids = [p["event_id"] for p in participant_events]
-
-    events = mongo.events.find({"_id": {"$in": event_ids}})
-
+    
+    if not event_ids:
+        return jsonify({
+            "events": [],
+            "pagination": {
+                "page": page,
+                "limit": limit,
+                "total": 0,
+                "total_pages": 0,
+                "has_next": False,
+                "has_prev": False
+            }
+        })
+    
+    # Build query
+    query = {"_id": {"$in": event_ids}}
+    if status_filter:
+        query["status"] = status_filter
+    
+    # Get total count
+    total = mongo.events.count_documents(query)
+    total_pages = (total + limit - 1) // limit
+    
+    # Validate sort field
+    allowed_sort_fields = ["created_at", "name", "total_pool", "total_spent", "status"]
+    if sort_field not in allowed_sort_fields:
+        sort_field = "created_at"
+    
+    # Get paginated events
+    skip = (page - 1) * limit
+    events = list(mongo.events.find(query)
+                  .sort(sort_field, sort_order)
+                  .skip(skip)
+                  .limit(limit))
+    
+    # Format response
     response = []
     for event in events:
         event["_id"] = str(event["_id"])
         event["creator_id"] = str(event["creator_id"])
+        # Include participant count
+        participant_count = mongo.participants.count_documents({
+            "event_id": ObjectId(event["_id"]),
+            "status": "active"
+        })
+        event["participant_count"] = participant_count
         response.append(event)
 
-    return jsonify({"events": response})
+    return jsonify({
+        "events": response,
+        "pagination": {
+            "page": page,
+            "limit": limit,
+            "total": total,
+            "total_pages": total_pages,
+            "has_next": page < total_pages,
+            "has_prev": page > 1
+        }
+    })
 
 
 @events_bp.route("/<event_id>", methods=["GET"])
@@ -649,9 +829,10 @@ def get_event_by_invite_code(invite_code):
     if event["status"] != "active":
         return jsonify({"error": "Event is no longer active"}), 400
     
-    # Return limited info for preview
+    # Return limited info for preview including deposit requirements
     participant_count = mongo.participants.count_documents({"event_id": event["_id"]})
     creator = mongo.users.find_one({"_id": event["creator_id"]})
+    rules = event.get("rules", {})
     
     return jsonify({
         "event": {
@@ -662,7 +843,10 @@ def get_event_by_invite_code(invite_code):
             "participant_count": participant_count,
             "start_date": event.get("start_date"),
             "end_date": event.get("end_date"),
-            "status": event["status"]
+            "status": event["status"],
+            "min_deposit": rules.get("min_deposit"),
+            "max_deposit": rules.get("max_deposit"),
+            "deposit_required": rules.get("min_deposit") is not None
         }
     })
 
@@ -670,8 +854,9 @@ def get_event_by_invite_code(invite_code):
 @events_bp.route("/join/<invite_code>", methods=["POST"])
 @jwt_required()
 def join_event_by_code(invite_code):
-    """Join an event using invite code with approval workflow."""
+    """Join an event using invite code with approval workflow and compulsory deposit."""
     user_id = str(get_jwt_identity())
+    data = request.get_json() or {}
     
     event = mongo.events.find_one({"invite_code": invite_code.upper()})
     
@@ -690,6 +875,33 @@ def join_event_by_code(invite_code):
     if is_participant(event["_id"], safe_object_id(user_id)):
         return jsonify({"error": "Already a participant"}), 409
     
+    # Check deposit requirements
+    rules = event.get("rules", {})
+    min_deposit = rules.get("min_deposit")
+    max_deposit = rules.get("max_deposit")
+    deposit_amount = data.get("deposit_amount", 0)
+    
+    if deposit_amount is not None:
+        deposit_amount = float(deposit_amount)
+    else:
+        deposit_amount = 0
+    
+    # Validate deposit against rules
+    if min_deposit is not None:
+        if deposit_amount < float(min_deposit):
+            return jsonify({
+                "error": f"Minimum deposit of ${min_deposit:.2f} is required to join this event",
+                "min_deposit": min_deposit,
+                "max_deposit": max_deposit
+            }), 400
+    
+    if max_deposit is not None and deposit_amount > float(max_deposit):
+        return jsonify({
+            "error": f"Deposit cannot exceed ${max_deposit:.2f}",
+            "min_deposit": min_deposit,
+            "max_deposit": max_deposit
+        }), 400
+    
     # Check reliability for joining
     # Returns: (can_join, message, required_deposit_multiplier)
     can_join, reliability_message, deposit_multiplier = ReliabilityService.check_can_join_event(user_id, event_id)
@@ -699,14 +911,15 @@ def join_event_by_code(invite_code):
             "reason": reliability_message
         }), 403
     
-    # Validate against event rules
-    # Returns: (is_valid, error_message, violation_type)
-    is_valid, error_message, violation_type = RuleEnforcementService.validate_join(event_id, user_id)
-    if not is_valid:
-        return jsonify({
-            "error": "Cannot join event",
-            "violations": [{"type": violation_type, "message": error_message}]
-        }), 403
+    # Apply deposit multiplier for unreliable users
+    if deposit_multiplier and deposit_multiplier > 1 and min_deposit:
+        adjusted_min = float(min_deposit) * deposit_multiplier
+        if deposit_amount < adjusted_min:
+            return jsonify({
+                "error": f"Based on your account status, minimum deposit is ${adjusted_min:.2f}",
+                "adjusted_min_deposit": adjusted_min,
+                "reliability_message": reliability_message
+            }), 400
     
     # Check if approval is required
     rules = event.get("rules", {})
@@ -741,32 +954,103 @@ def join_event_by_code(invite_code):
         }), 202
     
     # Direct join (no approval needed)
-    mongo.participants.insert_one({
-        "event_id": event["_id"],
-        "user_id": safe_object_id(user_id),
-        "deposit_amount": 0,
-        "total_spent": 0,
-        "balance": 0,
-        "status": "active",
-        "categories": [],
-        "joined_via": "invite_code",
-        "created_at": datetime.utcnow()
-    })
-    
-    # Notify creator
-    NotificationService.notify_join_request(
-        creator_id=str(event["creator_id"]),
-        event_id=event_id,
-        event_name=event["name"],
-        user_id=user_id,
-        requires_approval=False
-    )
-    
-    return jsonify({
-        "message": "Joined event successfully",
-        "event_id": event_id,
-        "event_name": event["name"]
-    }), 201
+    # If a deposit is required we create the participant record with zero
+    # recorded deposit/balance and create a pending event_deposits entry and
+    # a Finternet payment intent. The actual credit will happen on payment
+    # confirmation. If no deposit is required we record normally.
+    if deposit_amount > 0:
+        # create participant with zero balance until payment confirmed
+        mongo.participants.insert_one({
+            "event_id": event["_id"],
+            "user_id": safe_object_id(user_id),
+            "deposit_amount": 0,
+            "total_spent": 0,
+            "balance": 0,
+            "status": "active",
+            "categories": [],
+            "joined_via": "invite_code",
+            "created_at": datetime.utcnow()
+        })
+
+        # Create pending deposit record and payment intent
+        payment_url = None
+        try:
+            from app.payments.services.finternet import FinternetService
+            finternet = FinternetService()
+            intent_response = finternet.create_payment_intent(
+                amount=deposit_amount,
+                currency="USD",
+                description=f"Event deposit for: {event['name']}",
+                metadata={
+                    "type": "event_deposit",
+                    "event_id": event_id,
+                    "user_id": user_id,
+                    "deposit_type": "member"
+                }
+            )
+
+            intent_data = intent_response.get("data", intent_response)
+            intent_id = intent_data.get("id") or intent_response.get("id")
+
+            mongo.event_deposits.insert_one({
+                "event_id": event_id,
+                "user_id": ObjectId(user_id),
+                "intent_id": intent_id,
+                "amount": deposit_amount,
+                "status": "pending",
+                "deposit_type": "member",
+                "created_at": datetime.utcnow()
+            })
+
+            payment_url = finternet.get_payment_url(intent_response)
+        except Exception as e:
+            print(f"Finternet error: {e}")
+            payment_url = None
+
+        # Notify creator that someone joined (pending deposit)
+        NotificationService.notify_join_request(
+            creator_id=str(event["creator_id"]),
+            event_id=event_id,
+            event_name=event["name"],
+            user_id=user_id,
+            requires_approval=False
+        )
+
+        return jsonify({
+            "message": "Join pending deposit",
+            "event_id": event_id,
+            "event_name": event["name"],
+            "deposit_amount": deposit_amount,
+            "payment_url": payment_url
+        }), 201
+    else:
+        # No deposit required: record participant and update pool immediately
+        mongo.participants.insert_one({
+            "event_id": event["_id"],
+            "user_id": safe_object_id(user_id),
+            "deposit_amount": 0,
+            "total_spent": 0,
+            "balance": 0,
+            "status": "active",
+            "categories": [],
+            "joined_via": "invite_code",
+            "created_at": datetime.utcnow()
+        })
+
+        NotificationService.notify_join_request(
+            creator_id=str(event["creator_id"]),
+            event_id=event_id,
+            event_name=event["name"],
+            user_id=user_id,
+            requires_approval=False
+        )
+
+        return jsonify({
+            "message": "Joined event successfully",
+            "event_id": event_id,
+            "event_name": event["name"],
+            "deposit_amount": 0
+        }), 201
 
 
 # ------------------ JOIN REQUEST MANAGEMENT ------------------

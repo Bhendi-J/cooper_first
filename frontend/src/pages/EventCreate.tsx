@@ -43,6 +43,7 @@ export default function EventCreate() {
     // Deposit rules
     minDeposit: '',
     maxDeposit: '',
+    creatorDeposit: '',  // Creator's initial deposit
     // Expense rules
     maxExpense: '',
     minExpense: '',
@@ -65,11 +66,37 @@ export default function EventCreate() {
     setIsLoading(true);
 
     try {
+      // Validate creator deposit if min/max deposit is set
+      const minDep = formData.minDeposit ? parseFloat(formData.minDeposit) : 0;
+      const maxDep = formData.maxDeposit ? parseFloat(formData.maxDeposit) : Infinity;
+      const creatorDep = formData.creatorDeposit ? parseFloat(formData.creatorDeposit) : 0;
+      
+      if (minDep > 0 && creatorDep < minDep) {
+        toast({
+          title: 'Invalid deposit',
+          description: `Your deposit must be at least $${minDep.toFixed(2)}`,
+          variant: 'destructive',
+        });
+        setIsLoading(false);
+        return;
+      }
+      
+      if (maxDep < Infinity && creatorDep > maxDep) {
+        toast({
+          title: 'Invalid deposit',
+          description: `Your deposit cannot exceed $${maxDep.toFixed(2)}`,
+          variant: 'destructive',
+        });
+        setIsLoading(false);
+        return;
+      }
+      
       const response = await eventsAPI.create({
         name: formData.name,
         description: formData.description || undefined,
         start_date: formData.startDate || undefined,
         end_date: formData.endDate || undefined,
+        creator_deposit: creatorDep,
         rules: {
           // Deposit limits
           min_deposit: formData.minDeposit ? parseFloat(formData.minDeposit) : undefined,
@@ -109,6 +136,12 @@ export default function EventCreate() {
         title: 'Event created!',
         description: 'Share the code with your group to get started.',
       });
+      
+      // If there's a payment URL for the deposit, open it in a new tab
+      if (event.payment_url) {
+        window.open(event.payment_url, '_blank');
+      }
+      
     } catch (error: any) {
       toast({
         title: 'Failed to create event',
@@ -301,6 +334,31 @@ export default function EventCreate() {
                 <p className="text-xs text-muted-foreground mt-2">
                   Members can deposit any amount within this range
                 </p>
+                
+                {/* Creator's initial deposit */}
+                {(formData.minDeposit || formData.maxDeposit) && (
+                  <div className="mt-4 pt-4 border-t border-border">
+                    <Label htmlFor="creatorDeposit" className="text-success">Your Initial Deposit (Required)</Label>
+                    <div className="relative mt-2">
+                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-success" />
+                      <Input
+                        id="creatorDeposit"
+                        name="creatorDeposit"
+                        type="number"
+                        placeholder={formData.minDeposit || "Enter amount"}
+                        value={formData.creatorDeposit}
+                        onChange={handleInputChange}
+                        className="h-12 pl-11 bg-background-surface border-success/50 focus:border-success"
+                        required={!!formData.minDeposit}
+                        min={formData.minDeposit || 0}
+                        max={formData.maxDeposit || undefined}
+                      />
+                    </div>
+                    <p className="text-xs text-success mt-1">
+                      As the creator, you must deposit between ${formData.minDeposit || '0'} - ${formData.maxDeposit || '∞'}
+                    </p>
+                  </div>
+                )}
               </div>
 
               <Button type="submit" variant="gradient" size="lg" className="w-full">

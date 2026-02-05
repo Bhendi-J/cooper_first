@@ -149,16 +149,22 @@ export default function WalletPage() {
       setTotalTransactions(txRes.data.total);
       setWithdrawalFeePercent(feeRes.data.fee_percent);
 
-      // Calculate stats from transactions
+      // Calculate stats from transactions - ALL credits and debits
       const allTx = txRes.data.transactions;
-      const deposits = allTx.filter(t => t.type === 'credit' && (t.source === 'topup' || t.source === 'finternet_topup' || t.source === 'wallet_deposit'));
-      const withdrawals = allTx.filter(t => t.type === 'debit' && t.purpose === 'withdrawal');
+      
+      // All money coming IN (all credits)
+      const allCredits = allTx.filter(t => t.type === 'credit');
+      
+      // All money going OUT (all debits)
+      const allDebits = allTx.filter(t => t.type === 'debit');
+      
+      // Transfers in/out specifically
       const transfersIn = allTx.filter(t => t.type === 'credit' && t.source === 'transfer_in');
       const transfersOut = allTx.filter(t => t.type === 'debit' && t.purpose === 'transfer_out');
 
       setStats({
-        totalDeposits: deposits.reduce((acc, t) => acc + t.amount, 0),
-        totalWithdrawals: withdrawals.reduce((acc, t) => acc + t.amount, 0),
+        totalDeposits: allCredits.reduce((acc, t) => acc + t.amount, 0),
+        totalWithdrawals: allDebits.reduce((acc, t) => acc + t.amount, 0),
         totalTransfersIn: transfersIn.reduce((acc, t) => acc + t.amount, 0),
         totalTransfersOut: transfersOut.reduce((acc, t) => acc + t.amount, 0),
       });
@@ -398,7 +404,7 @@ export default function WalletPage() {
               <div className="w-8 h-8 rounded-lg bg-success/10 flex items-center justify-center">
                 <ArrowUp className="w-4 h-4 text-success" />
               </div>
-              <span className="text-sm text-muted-foreground">Deposits</span>
+              <span className="text-sm text-muted-foreground">Total In</span>
             </div>
             <p className="text-xl font-bold">${stats.totalDeposits.toFixed(2)}</p>
           </div>
@@ -408,7 +414,7 @@ export default function WalletPage() {
               <div className="w-8 h-8 rounded-lg bg-destructive/10 flex items-center justify-center">
                 <ArrowDown className="w-4 h-4 text-destructive" />
               </div>
-              <span className="text-sm text-muted-foreground">Withdrawals</span>
+              <span className="text-sm text-muted-foreground">Total Out</span>
             </div>
             <p className="text-xl font-bold">${stats.totalWithdrawals.toFixed(2)}</p>
           </div>

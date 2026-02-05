@@ -2,6 +2,8 @@ import { useState, useEffect } from 'react';
 import { Link, useParams, useNavigate } from 'react-router-dom';
 import { motion } from 'framer-motion';
 import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
 import {
   Wallet,
   Users,
@@ -10,6 +12,8 @@ import {
   CheckCircle2,
   ArrowRight,
   LogIn,
+  DollarSign,
+  AlertCircle,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { eventsAPI } from '@/lib/api';
@@ -32,8 +36,12 @@ export default function JoinEvent() {
     start_date?: string;
     end_date?: string;
     status?: string;
+    min_deposit?: number;
+    max_deposit?: number;
+    deposit_required?: boolean;
   } | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [depositAmount, setDepositAmount] = useState('');
 
   useEffect(() => {
     const fetchEventPreview = async () => {
@@ -59,9 +67,36 @@ export default function JoinEvent() {
   const handleJoin = async () => {
     if (!code || !isAuthenticated) return;
 
+    // Validate deposit amount if required
+    if (eventPreview?.deposit_required) {
+      const deposit = parseFloat(depositAmount);
+      const minDep = eventPreview.min_deposit || 0;
+      const maxDep = eventPreview.max_deposit || Infinity;
+      
+      if (isNaN(deposit) || deposit < minDep) {
+        toast({
+          title: 'Deposit Required',
+          description: `Minimum deposit is $${minDep.toFixed(2)}`,
+          variant: 'destructive',
+        });
+        return;
+      }
+      
+      if (maxDep !== null && deposit > maxDep) {
+        toast({
+          title: 'Deposit Too High',
+          description: `Maximum deposit is $${maxDep.toFixed(2)}`,
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     setIsJoining(true);
     try {
-      const response = await eventsAPI.joinByCode(code);
+      const response = await eventsAPI.joinByCode(code, {
+        deposit_amount: depositAmount ? parseFloat(depositAmount) : 0
+      });
       
       // Check if approval is required
       if (response.status === 202 || response.data.status === 'pending') {
@@ -193,6 +228,43 @@ export default function JoinEvent() {
             </div>
           )}
 
+          {/* Deposit Input - show if deposit is required */}
+          {eventPreview?.deposit_required && isAuthenticated && (
+            <div className="bg-warning/10 border border-warning/30 rounded-xl p-4 mb-6">
+              <div className="flex items-center gap-2 mb-3">
+                <AlertCircle className="w-5 h-5 text-warning" />
+                <span className="font-semibold text-warning">Deposit Required</span>
+              </div>
+              <p className="text-sm text-muted-foreground mb-3">
+                This event requires a deposit to join.
+                {eventPreview.min_deposit && eventPreview.max_deposit
+                  ? ` Amount must be between $${eventPreview.min_deposit} - $${eventPreview.max_deposit}`
+                  : eventPreview.min_deposit
+                  ? ` Minimum: $${eventPreview.min_deposit}`
+                  : eventPreview.max_deposit
+                  ? ` Maximum: $${eventPreview.max_deposit}`
+                  : ''}
+              </p>
+              <div className="space-y-2">
+                <Label htmlFor="depositAmount">Your Deposit Amount</Label>
+                <div className="relative">
+                  <DollarSign className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                  <Input
+                    id="depositAmount"
+                    type="number"
+                    placeholder={eventPreview.min_deposit?.toString() || "Enter amount"}
+                    value={depositAmount}
+                    onChange={(e) => setDepositAmount(e.target.value)}
+                    className="pl-10 h-12"
+                    min={eventPreview.min_deposit || 0}
+                    max={eventPreview.max_deposit || undefined}
+                    required
+                  />
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Actions */}
           {isAuthenticated ? (
             <Button
@@ -200,13 +272,15 @@ export default function JoinEvent() {
               size="lg"
               className="w-full"
               onClick={handleJoin}
-              disabled={isJoining}
+              disabled={isJoining || (eventPreview?.deposit_required && !depositAmount)}
             >
               {isJoining ? (
                 <Loader2 className="w-5 h-5 animate-spin" />
               ) : (
                 <>
-                  Join Event
+                  {eventPreview?.deposit_required && depositAmount
+                    ? `Join & Deposit $${parseFloat(depositAmount).toFixed(2)}`
+                    : 'Join Event'}
                   <ArrowRight className="w-5 h-5" />
                 </>
               )}
