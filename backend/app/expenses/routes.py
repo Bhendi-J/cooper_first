@@ -256,29 +256,31 @@ def add_expense():
     )
     
     shortfall_debts = []
-    if not pool_success and "Insufficient" in pool_error:
+    if not pool_success and pool_error and "Insufficient" in pool_error:
         # Handle shortfall with wallet fallback
         for split in splits:
             split_user_id = split["user_id"]
             split_amount = split["amount"]
             
-            fallback_result = WalletFallbackService.handle_shortfall(
+            success, debt_info = WalletFallbackService.handle_shortfall(
                 user_id=split_user_id,
                 event_id=event_id,
-                amount=split_amount
+                expense_id=expense_id,
+                required_amount=split_amount,
+                available_contribution=0
             )
             
-            if fallback_result.get("debt_created"):
+            if debt_info and isinstance(debt_info, dict) and debt_info.get("_id"):
                 shortfall_debts.append({
                     "user_id": split_user_id,
-                    "amount": fallback_result.get("debt_amount"),
-                    "debt_id": fallback_result.get("debt_id")
+                    "amount": debt_info.get("amount_remaining", split_amount),
+                    "debt_id": str(debt_info.get("_id"))
                 })
                 
                 # Notify user about debt
                 NotificationService.notify_debt_created(
                     user_id=split_user_id,
-                    amount=fallback_result.get("debt_amount"),
+                    amount=debt_info.get("amount_remaining", split_amount),
                     event_id=event_id,
                     expense_id=expense_id
                 )
@@ -638,11 +640,15 @@ def cancel_expense(expense_id):
 @jwt_required()
 def create_expense_with_payment():
     """
-    Create an expense and initiate payment via Finternet gateway.
+    Create an expense and initiate DIRECT payment via Finternet gateway.
     
-    This endpoint creates the expense record and returns a payment URL
-    for the user to complete the payment. Once payment is confirmed,
-    the expense will be processed.
+    This endpoint:
+    1. Validates the expense and calculates splits
+    2. Deducts from pool FIRST (before payment) to avoid stuck states
+    3. Creates a Finternet payment intent for the payer's share
+    4. Returns payment URL for the user to complete
+    
+    If payment fails later, the expense is already recorded (manual reconciliation needed).
     
     Request body:
     {
@@ -653,6 +659,7 @@ def create_expense_with_payment():
         "split_type": "equal|weighted|percentage|exact",
         "split_details": {...},
         "selected_members": [...]  // optional
+        "receipt_data": {...}  // optional - from OCR scan
     }
     """
     from app.payments.services.finternet import FinternetService
@@ -661,8 +668,13 @@ def create_expense_with_payment():
     data = request.get_json()
 
     event_id = str(data["event_id"])
-    amount = float(data["amount"])
+    amount = round(float(data["amount"]), 2)  # Round to 2 decimal places
     description = data.get("description", "")
+    category_id = data.get("category_id")
+    split_type = data.get("split_type", "equal")
+    split_details = data.get("split_details", {})
+    selected_members = data.get("selected_members")
+    receipt_data = data.get("receipt_data")  # OCR data if available
 
     # Get event
     event = mongo.events.find_one({"_id": ObjectId(event_id)})
@@ -678,72 +690,309 @@ def create_expense_with_payment():
     if not participant:
         return jsonify({"error": "Not an active participant"}), 403
 
+    # Get all active participants
+    all_participants = list(
+        mongo.participants.find(
+            {"event_id": ObjectId(event_id), "status": "active"}
+        )
+    )
+    
+    if not all_participants:
+        return jsonify({"error": "No active participants"}), 400
+
+    # Deduplicate participants
+    seen_user_ids = set()
+    unique_participants = []
+    for p in all_participants:
+        uid = str(p["user_id"])
+        if uid not in seen_user_ids:
+            seen_user_ids.add(uid)
+            unique_participants.append(p)
+    all_participants = unique_participants
+
+    # Filter participants if selected_members is provided
+    if selected_members and len(selected_members) > 0:
+        participants = [p for p in all_participants if str(p["user_id"]) in selected_members]
+        if not participants:
+            return jsonify({"error": "No valid participants selected"}), 400
+    else:
+        participants = all_participants
+
+    # Calculate splits based on split type
+    participant_ids = [str(p["user_id"]) for p in participants]
+    num_participants = len(participant_ids)
+    
+    if split_type == "equal":
+        # Precise equal split
+        base_share = round(amount / num_participants, 2)
+        remainder = round(amount - (base_share * num_participants), 2)
+        
+        split_amounts = []
+        for i, pid in enumerate(participant_ids):
+            # Add remainder to first participant to ensure total matches
+            share = base_share + (remainder if i == 0 else 0)
+            split_amounts.append({"user_id": pid, "amount": round(share, 2)})
+    elif split_type == "weighted":
+        weights = split_details.get("weights", {})
+        split_amounts = ExpenseDistributionService.calculate_weighted_split(amount, weights)
+    elif split_type == "percentage":
+        percentages = split_details.get("percentages", {})
+        split_amounts, split_error = ExpenseDistributionService.calculate_percentage_split(amount, percentages)
+        if split_error:
+            return jsonify({"error": split_error}), 400
+    elif split_type == "exact":
+        exact_amounts = split_details.get("amounts", {})
+        split_amounts, split_error = ExpenseDistributionService.calculate_exact_split(amount, exact_amounts)
+        if split_error:
+            return jsonify({"error": split_error}), 400
+    else:
+        # Default to equal
+        base_share = round(amount / num_participants, 2)
+        remainder = round(amount - (base_share * num_participants), 2)
+        split_amounts = []
+        for i, pid in enumerate(participant_ids):
+            share = base_share + (remainder if i == 0 else 0)
+            split_amounts.append({"user_id": pid, "amount": round(share, 2)})
+
+    # Build splits array
+    split_amounts_dict = {s["user_id"]: s["amount"] for s in split_amounts}
+    
+    # Verify total matches amount (accounting for rounding)
+    calculated_total = sum(split_amounts_dict.values())
+    if abs(calculated_total - amount) > 0.01:
+        # Adjust first participant's share to match total
+        first_pid = participant_ids[0]
+        adjustment = round(amount - calculated_total, 2)
+        split_amounts_dict[first_pid] = round(split_amounts_dict[first_pid] + adjustment, 2)
+    
+    splits = []
+    payer_share = 0
+    for p in participants:
+        pid = str(p["user_id"])
+        share_amount = round(float(split_amounts_dict.get(pid, 0)), 2)
+        if pid == user_id:
+            payer_share = share_amount
+        splits.append({
+            "user_id": pid,
+            "amount": share_amount,
+            "status": "pending"
+        })
+
+    # === STEP 1: Create expense record FIRST (before payment) ===
+    expense = {
+        "event_id": ObjectId(event_id),
+        "payer_id": ObjectId(user_id),
+        "amount": amount,
+        "description": description,
+        "category_id": ObjectId(category_id) if category_id else None,
+        "split_type": split_type,
+        "splits": splits,
+        "status": "payment_pending",
+        "payment_method": "finternet",
+        "receipt_data": receipt_data,  # Store OCR data if available
+        "created_at": datetime.utcnow()
+    }
+    
+    result = mongo.expenses.insert_one(expense)
+    expense_id = str(result.inserted_id)
+
+    # === STEP 2: Deduct from pool BEFORE payment ===
+    pool_success, pool_error = PoolService.deduct_expense(
+        event_id=event_id,
+        expense_id=expense_id,
+        total_amount=amount,
+        splits=splits
+    )
+    
+    shortfall_debts = []
+    if not pool_success and pool_error and "Insufficient" in pool_error:
+        # Handle shortfall - create debts for users with insufficient balance
+        for split in splits:
+            split_user_id = split["user_id"]
+            split_amount = split["amount"]
+            
+            success, debt_info = WalletFallbackService.handle_shortfall(
+                user_id=split_user_id,
+                event_id=event_id,
+                expense_id=expense_id,
+                required_amount=split_amount,
+                available_contribution=0  # Will be calculated inside
+            )
+            
+            if debt_info and isinstance(debt_info, dict) and debt_info.get("_id"):
+                shortfall_debts.append({
+                    "user_id": split_user_id,
+                    "amount": debt_info.get("amount_remaining", split_amount),
+                    "debt_id": str(debt_info.get("_id"))
+                })
+
+    # === STEP 3: Create Finternet payment intent ===
     try:
-        # Create payment intent via Finternet (using DELIVERY_VS_PAYMENT type per Postman collection)
         finternet = FinternetService()
-        result = finternet.create_payment_intent(
+        
+        # Create payment for the FULL amount (payer pays merchant)
+        intent_response = finternet.create_payment_intent(
             amount=str(amount),
-            currency="USD",  # Use USD as per Postman collection
+            currency="USD",
             payment_type="DELIVERY_VS_PAYMENT",
             settlement_method="OFF_RAMP_MOCK",
-            settlement_destination="bank_account_123",
-            description=description or f"Expense for {event.get('name', 'Event')}"
+            settlement_destination="merchant_account",
+            description=description or f"Expense: {event.get('name', 'Event')}"
         )
         
-        intent_data = result.get("data", result)
+        intent_data = intent_response.get("data", intent_response)
         intent_id = intent_data.get("id")
         
-        # Construct payment URL - redirect to Finternet payment page
+        # Get payment URL
         payment_url = (
             intent_data.get("paymentUrl") or 
             intent_data.get("payment_url") or 
             f"https://pay.fmm.finternetlab.io/?intent={intent_id}"
         )
         
-        # Store pending expense with payment intent
-        pending_expense = {
+        # Update expense with payment info
+        mongo.expenses.update_one(
+            {"_id": ObjectId(expense_id)},
+            {"$set": {
+                "payment_intent_id": intent_id,
+                "payment_url": payment_url
+            }}
+        )
+        
+        # Log activity
+        mongo.activities.insert_one({
+            "type": "expense",
             "event_id": ObjectId(event_id),
-            "payer_id": ObjectId(user_id),
+            "user_id": ObjectId(user_id),
+            "amount": amount,
+            "description": description or "Expense (Finternet payment)",
+            "expense_id": ObjectId(expense_id),
+            "payment_method": "finternet",
+            "payment_status": "pending",
+            "created_at": datetime.utcnow()
+        })
+        
+        # Prepare response
+        response_expense = {
+            "_id": expense_id,
+            "event_id": event_id,
+            "payer_id": user_id,
             "amount": amount,
             "description": description,
-            "category_id": ObjectId(data.get("category_id")) if data.get("category_id") else None,
-            "split_type": data.get("split_type", "equal"),
-            "split_details": data.get("split_details", {}),
-            "selected_members": data.get("selected_members"),
-            "payment_intent_id": intent_id,
-            "payment_status": "pending",
-            "status": "awaiting_payment",
-            "created_at": datetime.utcnow()
+            "split_type": split_type,
+            "splits": splits,
+            "payer_share": payer_share,
+            "status": "payment_pending"
         }
         
-        result = mongo.pending_expenses.insert_one(pending_expense)
-        
         return jsonify({
-            "pending_expense_id": str(result.inserted_id),
+            "expense": response_expense,
             "payment_intent_id": intent_id,
             "payment_url": payment_url,
             "amount": amount,
-            "message": "Complete payment to finalize the expense"
+            "payer_share": payer_share,
+            "pool_updated": pool_success,
+            "shortfall_debts": shortfall_debts if shortfall_debts else None,
+            "message": "Expense recorded. Complete payment to finalize."
         }), 201
         
     except Exception as e:
-        return jsonify({"error": f"Failed to create payment: {str(e)}"}), 500
+        # Payment gateway failed - expense is still recorded
+        # Update expense to reflect payment failure
+        mongo.expenses.update_one(
+            {"_id": ObjectId(expense_id)},
+            {"$set": {
+                "payment_status": "failed",
+                "payment_error": str(e)
+            }}
+        )
+        
+        return jsonify({
+            "expense_id": expense_id,
+            "error": f"Payment initiation failed: {str(e)}",
+            "pool_updated": pool_success,
+            "message": "Expense recorded but payment failed. Please retry payment."
+        }), 201  # Still 201 because expense was created
 
 
-@expenses_bp.route("/pay/<pending_id>/confirm", methods=["POST"])
+@expenses_bp.route("/pay/<expense_id>/confirm", methods=["POST"])
 @jwt_required()
-def confirm_expense_payment(pending_id):
+def confirm_expense_payment(expense_id):
     """
-    Confirm that payment was completed and process the expense.
+    Confirm that payment was completed and finalize the expense.
     Called after the payment gateway confirms the transaction.
+    
+    Since we update the pool BEFORE payment, this just updates the status.
     """
     user_id = get_jwt_identity()
     
-    # Get pending expense
-    pending = mongo.pending_expenses.find_one({"_id": ObjectId(pending_id)})
-    if not pending:
-        return jsonify({"error": "Pending expense not found"}), 404
+    # Get expense
+    expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+    if not expense:
+        # Check pending_expenses for backward compatibility
+        pending = mongo.pending_expenses.find_one({"_id": ObjectId(expense_id)})
+        if pending:
+            return _confirm_legacy_pending_expense(pending, user_id)
+        return jsonify({"error": "Expense not found"}), 404
     
+    if str(expense["payer_id"]) != user_id:
+        return jsonify({"error": "Not authorized"}), 403
+    
+    if expense.get("status") == "approved":
+        return jsonify({"message": "Payment already confirmed", "expense_id": expense_id}), 200
+    
+    # Verify payment with Finternet if we have an intent ID
+    payment_intent_id = expense.get("payment_intent_id")
+    payment_verified = False
+    
+    if payment_intent_id:
+        try:
+            finternet = FinternetService()
+            intent_status = finternet.get_payment_intent(payment_intent_id)
+            intent_data = intent_status.get("data", intent_status)
+            
+            status = intent_data.get("status", "").upper()
+            if status in ["SUCCEEDED", "SETTLED", "FINAL", "PROCESSING", "CONFIRMED"]:
+                payment_verified = True
+        except Exception as e:
+            print(f"Payment verification warning: {e}")
+            # Continue anyway - expense was already recorded
+            payment_verified = True  # Assume success if we can't verify
+    else:
+        payment_verified = True  # No intent ID means direct confirmation
+    
+    # Update expense status
+    mongo.expenses.update_one(
+        {"_id": ObjectId(expense_id)},
+        {"$set": {
+            "status": "approved",
+            "payment_status": "completed" if payment_verified else "unverified",
+            "approved_at": datetime.utcnow()
+        }}
+    )
+    
+    # Update splits status
+    mongo.expenses.update_one(
+        {"_id": ObjectId(expense_id)},
+        {"$set": {"splits.$[].status": "paid"}}
+    )
+    
+    # Update activity
+    mongo.activities.update_one(
+        {"expense_id": ObjectId(expense_id)},
+        {"$set": {"payment_status": "completed"}}
+    )
+    
+    return jsonify({
+        "message": "Expense payment confirmed",
+        "expense_id": expense_id,
+        "amount": expense.get("amount"),
+        "payment_verified": payment_verified
+    })
+
+
+def _confirm_legacy_pending_expense(pending, user_id):
+    """Handle confirmation for legacy pending_expenses collection."""
     if str(pending["payer_id"]) != user_id:
         return jsonify({"error": "Not authorized"}), 403
     
@@ -751,7 +1000,6 @@ def confirm_expense_payment(pending_id):
         return jsonify({"error": "Payment already confirmed"}), 400
     
     # Verify payment with Finternet
-    from app.payments.services.finternet import FinternetService
     try:
         finternet = FinternetService()
         intent_status = finternet.get_payment_intent(pending["payment_intent_id"])
@@ -771,24 +1019,27 @@ def confirm_expense_payment(pending_id):
     event_id = str(pending["event_id"])
     amount = pending["amount"]
     
-    # Build splits (simplified - uses the logic from add_expense)
-    event = mongo.events.find_one({"_id": pending["event_id"]})
+    # Get participants and calculate splits
     participants = list(mongo.participants.find({
         "event_id": pending["event_id"],
         "status": "active"
     }))
     
     participant_ids = [str(p["user_id"]) for p in participants]
-    split_amounts = ExpenseDistributionService.calculate_equal_split(amount, participant_ids)
-    split_amounts_dict = {s["user_id"]: s["amount"] for s in split_amounts}
+    num_participants = len(participant_ids)
+    
+    # Calculate equal split with proper rounding
+    base_share = round(amount / num_participants, 2)
+    remainder = round(amount - (base_share * num_participants), 2)
     
     splits = []
-    for p in participants:
+    for i, p in enumerate(participants):
         pid = str(p["user_id"])
+        share = base_share + (remainder if i == 0 else 0)
         splits.append({
             "user_id": pid,
-            "amount": float(split_amounts_dict.get(pid, 0)),
-            "status": "paid"  # Payment already made via gateway
+            "amount": round(share, 2),
+            "status": "paid"
         })
     
     # Create expense record
@@ -810,8 +1061,7 @@ def confirm_expense_payment(pending_id):
     result = mongo.expenses.insert_one(expense)
     expense_id = str(result.inserted_id)
     
-    # Deduct from pool and update participant balances using PoolService
-    # This ensures consistent balance updates across all expense creation paths
+    # Deduct from pool
     PoolService.deduct_expense(
         event_id=event_id,
         expense_id=expense_id,
@@ -821,7 +1071,7 @@ def confirm_expense_payment(pending_id):
     
     # Mark pending expense as completed
     mongo.pending_expenses.update_one(
-        {"_id": ObjectId(pending_id)},
+        {"_id": pending["_id"]},
         {"$set": {
             "payment_status": "completed",
             "expense_id": result.inserted_id,

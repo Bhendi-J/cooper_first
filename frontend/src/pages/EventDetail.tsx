@@ -25,6 +25,8 @@ import {
   Crown,
   RefreshCw,
   Flag,
+  QrCode,
+  Download,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { eventsAPI, expensesAPI, Event, Expense, PendingApproval } from '@/lib/api';
@@ -58,6 +60,9 @@ export default function EventDetail() {
   
   // Leave event state
   const [showLeaveModal, setShowLeaveModal] = useState(false);
+  
+  // QR code modal state
+  const [showQRModal, setShowQRModal] = useState(false);
   const [isLeaving, setIsLeaving] = useState(false);
   
   // Delete event state (for creator)
@@ -681,18 +686,94 @@ export default function EventDetail() {
             initial={{ opacity: 0, y: 20 }}
             animate={{ opacity: 1, y: 0 }}
             transition={{ delay: 0.15 }}
-            className="glass-card p-4 rounded-xl mb-8 flex items-center justify-between"
+            className="glass-card p-4 rounded-xl mb-8"
           >
-            <div className="flex items-center gap-3">
-              <Share2 className="w-5 h-5 text-primary" />
-              <span className="text-muted-foreground">Invite Code:</span>
-              <span className="font-mono font-bold text-lg tracking-widest">{inviteCode}</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <Share2 className="w-5 h-5 text-primary" />
+                <span className="text-muted-foreground">Invite Code:</span>
+                <span className="font-mono font-bold text-lg tracking-widest">{inviteCode}</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <Button variant="ghost" size="sm" onClick={() => setShowQRModal(true)}>
+                  <QrCode className="w-4 h-4 mr-2" />
+                  QR
+                </Button>
+                <Button variant="ghost" size="sm" onClick={copyCode}>
+                  <Copy className="w-4 h-4 mr-2" />
+                  Copy
+                </Button>
+              </div>
             </div>
-            <Button variant="ghost" size="sm" onClick={copyCode}>
-              <Copy className="w-4 h-4 mr-2" />
-              Copy
-            </Button>
           </motion.div>
+        )}
+
+        {/* QR Code Modal */}
+        {showQRModal && inviteCode && (
+          <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 backdrop-blur-sm">
+            <motion.div
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              className="glass-card p-6 rounded-2xl max-w-sm w-full mx-4 text-center"
+            >
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-lg font-bold">Scan to Join</h3>
+                <Button variant="ghost" size="icon" onClick={() => setShowQRModal(false)}>
+                  <X className="w-5 h-5" />
+                </Button>
+              </div>
+              
+              <div className="bg-white p-4 rounded-xl inline-block mx-auto mb-4">
+                <img
+                  src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(`${window.location.origin}/join/${inviteCode}`)}&bgcolor=ffffff&color=000000&margin=10`}
+                  alt="QR Code to join event"
+                  className="w-48 h-48"
+                />
+              </div>
+              
+              <p className="text-sm text-muted-foreground mb-4">
+                Scan this QR code with your phone camera to join <span className="font-semibold text-foreground">{event?.name}</span>
+              </p>
+              
+              <div className="flex gap-2">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => {
+                    const link = document.createElement('a');
+                    link.href = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(`${window.location.origin}/join/${inviteCode}`)}&bgcolor=ffffff&color=000000&margin=20&format=png`;
+                    link.download = `${event?.name?.replace(/\s+/g, '_') || 'event'}_QR.png`;
+                    link.click();
+                    toast({ title: 'QR Downloaded!', description: 'Share this QR code with your group.' });
+                  }}
+                >
+                  <Download className="w-4 h-4 mr-2" />
+                  Download
+                </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="flex-1"
+                  onClick={() => {
+                    if (navigator.share) {
+                      navigator.share({
+                        title: event?.name || 'Join Event',
+                        text: `Join "${event?.name}" on Cooper`,
+                        url: `${window.location.origin}/join/${inviteCode}`,
+                      });
+                    } else {
+                      navigator.clipboard.writeText(`${window.location.origin}/join/${inviteCode}`);
+                      toast({ title: 'Link Copied!', description: 'Share link copied to clipboard.' });
+                    }
+                  }}
+                >
+                  <Share2 className="w-4 h-4 mr-2" />
+                  Share
+                </Button>
+              </div>
+            </motion.div>
+          </div>
         )}
 
         {/* Tabs */}

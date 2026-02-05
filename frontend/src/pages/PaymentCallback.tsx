@@ -46,17 +46,20 @@ export default function PaymentCallback() {
         try {
             const response = await expensesAPI.confirmPayment(pendingExpenseId);
             
-            if (response.data.expense_id) {
+            if (response.data.expense_id || response.data.message) {
                 setPaymentData({
                     ...paymentData,
-                    expense_id: response.data.expense_id,
+                    expense_id: response.data.expense_id || pendingExpenseId,
                     amount: response.data.amount,
                     purpose: 'expense',
+                    payment_verified: response.data.payment_verified,
                 });
                 
                 toast({
-                    title: '🎉 Expense Created!',
-                    description: `$${response.data.amount} expense has been recorded.`,
+                    title: '🎉 Expense Payment Confirmed!',
+                    description: response.data.amount 
+                        ? `₹${response.data.amount} expense has been finalized.`
+                        : 'Your expense payment has been confirmed.',
                 });
                 
                 // Cleanup localStorage
@@ -74,6 +77,11 @@ export default function PaymentCallback() {
             // If payment is still processing, don't treat as failure
             if (paymentStatus === 'PROCESSING' || paymentStatus === 'INITIATED') {
                 return false; // Not ready yet
+            }
+            
+            // If expense was already confirmed, treat as success
+            if (error.response?.data?.message?.includes('already confirmed')) {
+                return true;
             }
             
             // Real failure

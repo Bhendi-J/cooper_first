@@ -400,23 +400,28 @@ export const expensesAPI = {
   add: (data: CreateExpenseData) =>
     api.post<AddExpenseResponse>('/expenses/', data),
 
-  // Add expense with payment gateway
-  addWithPayment: (data: CreateExpenseData) =>
+  // Add expense with DIRECT Finternet payment
+  // Pool is updated BEFORE payment to avoid stuck states
+  addWithPayment: (data: CreateExpenseData & { receipt_data?: Record<string, any> }) =>
     api.post<{
-      pending_expense_id: string;
+      expense: Expense;
       payment_intent_id: string;
       payment_url: string;
       amount: number;
+      payer_share: number;
+      pool_updated: boolean;
+      shortfall_debts?: Array<{ user_id: string; amount: number; debt_id: string }>;
       message: string;
     }>('/expenses/pay', data),
 
-  // Confirm expense payment
-  confirmPayment: (pendingId: string) =>
+  // Confirm expense payment (after returning from Finternet)
+  confirmPayment: (expenseId: string) =>
     api.post<{
       message: string;
       expense_id: string;
       amount: number;
-    }>(`/expenses/pay/${pendingId}/confirm`),
+      payment_verified: boolean;
+    }>(`/expenses/pay/${expenseId}/confirm`),
 
   // Get all expenses for an event
   getByEvent: (eventId: string) =>

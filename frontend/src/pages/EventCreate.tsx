@@ -18,6 +18,8 @@ import {
   Plus,
   X,
   Shield,
+  QrCode,
+  Download,
 } from 'lucide-react';
 import { useToast } from '@/hooks/use-toast';
 import { eventsAPI } from '@/lib/api';
@@ -533,11 +535,46 @@ export default function EventCreate() {
 
             <h1 className="text-3xl font-display font-bold mb-2">Event Created!</h1>
             <p className="text-muted-foreground mb-8">
-              Share the code or link with your group to invite them.
+              Share the code or scan QR to invite your group.
             </p>
 
             <div className="glass-card p-8 rounded-xl mb-8">
+              {/* QR Code Section */}
               <div className="mb-6">
+                <div className="flex items-center justify-center gap-2 mb-4">
+                  <QrCode className="w-5 h-5 text-primary" />
+                  <p className="text-sm font-medium">Scan to Join</p>
+                </div>
+                <div className="bg-white p-4 rounded-xl inline-block mx-auto">
+                  <img
+                    src={`https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(createdEvent.link)}&bgcolor=ffffff&color=000000&margin=10`}
+                    alt="QR Code to join event"
+                    className="w-48 h-48 mx-auto"
+                  />
+                </div>
+                <div className="flex justify-center mt-3">
+                  <Button
+                    variant="ghost"
+                    size="sm"
+                    onClick={() => {
+                      // Download QR code
+                      const link = document.createElement('a');
+                      link.href = `https://api.qrserver.com/v1/create-qr-code/?size=400x400&data=${encodeURIComponent(createdEvent.link)}&bgcolor=ffffff&color=000000&margin=20&format=png`;
+                      link.download = `${formData.name.replace(/\s+/g, '_')}_QR.png`;
+                      link.click();
+                      toast({
+                        title: 'QR Downloaded!',
+                        description: 'Share this QR code with your group.',
+                      });
+                    }}
+                  >
+                    <Download className="w-4 h-4 mr-2" />
+                    Download QR
+                  </Button>
+                </div>
+              </div>
+
+              <div className="border-t border-border pt-6 mb-6">
                 <p className="text-sm text-muted-foreground mb-2">Join Code</p>
                 <div className="flex items-center justify-center gap-3">
                   <span className="text-4xl font-display font-bold tracking-widest gradient-text">
@@ -589,10 +626,12 @@ export default function EventCreate() {
                       text: `Join my event "${formData.name}" on Cooper`,
                       url: createdEvent.link,
                     });
+                  } else {
+                    copyToClipboard(createdEvent.link);
                   }
                 }}
               >
-                <Share2 className="w-5 h-5" />
+                <Share2 className="w-5 h-5 mr-2" />
                 Share
               </Button>
               <Link to={`/events/${createdEvent.id}`} className="flex-1">

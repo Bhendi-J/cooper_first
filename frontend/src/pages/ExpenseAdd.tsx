@@ -117,17 +117,17 @@ export default function ExpenseAdd() {
     try {
       // Build split details based on split type
       let splitDetails: Record<string, any> = {};
-      let splitType = formData.splitType;
+      let apiSplitType: 'equal' | 'weighted' | 'percentage' | 'exact' = 'equal';
       
       if (formData.splitType === 'equal') {
-        splitType = 'equal';
+        apiSplitType = 'equal';
       } else if (formData.splitType === 'custom') {
         // Custom: equal split among selected members only
-        splitType = 'equal';
+        apiSplitType = 'equal';
         // Only include selected members - backend will handle the split
       } else if (formData.splitType === 'exact') {
         // Exact: specific amounts per member
-        splitType = 'exact';
+        apiSplitType = 'exact';
         splitDetails = {
           amounts: Object.fromEntries(
             Object.entries(customAmounts)
@@ -141,25 +141,68 @@ export default function ExpenseAdd() {
         event_id: id,
         amount: parseFloat(formData.amount),
         description: formData.description || undefined,
-        split_type: splitType,
+        split_type: apiSplitType,
         split_details: Object.keys(splitDetails).length > 0 ? splitDetails : undefined,
         selected_members: formData.splitType === 'custom' ? selectedMembers : undefined,
       };
 
-      // Handle payment gateway option
+      // Handle payment gateway option (Direct Finternet payment)
       if (formData.paymentType === 'gateway') {
-        const paymentResponse = await expensesAPI.addWithPayment(expenseData);
+        // Include receipt data if available from scanner
+        const paymentData = {
+          ...expenseData,
+          receipt_data: showScanner ? undefined : undefined, // TODO: Store scanned receipt data
+        };
         
-        // Store for confirmation after payment
-        localStorage.setItem('pendingExpenseId', paymentResponse.data.pending_expense_id);
+        const paymentResponse = await expensesAPI.addWithPayment(paymentData);
+        
+        // Expense is already recorded and pool updated!
+        // Store expense ID for confirmation after payment
+        localStorage.setItem('pendingExpenseId', paymentResponse.data.expense._id);
         localStorage.setItem('pendingExpenseEventId', id);
         
-        // Direct redirect to payment gateway
-        window.location.href = paymentResponse.data.payment_url;
+        toast({
+          title: 'Expense recorded!',
+          description: `₹${formData.amount} expense recorded. Redirecting to payment...`,
+        });
+        
+        // Show shortfall warning if any
+        if (paymentResponse.data.shortfall_debts && paymentResponse.data.shortfall_debts.length > 0) {
+          toast({
+            title: 'Pool shortfall detected',
+            description: 'Some participants have outstanding balances.',
+            variant: 'default',
+          });
+        }
+        
+        // Redirect to payment gateway
+        setTimeout(() => {
+          window.location.href = paymentResponse.data.payment_url;
+        }, 1000);
         return;
       }
 
-      // Regular expense flow (wallet or cash)
+      // Handle cash expense (requires member approval)
+      if (formData.paymentType === 'cash') {
+        const cashResponse = await expensesAPI.addCash(expenseData);
+        
+        if (cashResponse.data.status === 'pending_member_approval') {
+          toast({
+            title: 'Cash expense submitted',
+            description: `Waiting for ${cashResponse.data.members_pending?.length || 0} member(s) to verify the payment.`,
+          });
+        } else {
+          toast({
+            title: 'Cash expense recorded!',
+            description: `₹${formData.amount} has been recorded.`,
+          });
+        }
+        
+        navigate(`/events/${id}`);
+        return;
+      }
+
+      // Regular expense flow (wallet/pool deduction)
       const response = await expensesAPI.add(expenseData);
 
       // Check if expense requires approval
