@@ -79,11 +79,13 @@ class GeminiOCRService:
             """
 
             # Try different model names with the new google-genai SDK
+            # Updated based on available models from the API
             models_to_try = [
                 'gemini-2.0-flash',
-                'gemini-1.5-flash', 
-                'gemini-1.5-pro',
-                'gemini-pro-vision',
+                'gemini-2.0-flash-lite-001',
+                'gemini-flash-latest', 
+                'gemini-pro-latest',
+                'gemini-1.5-flash', # Keeping as fallback
             ]
             
             response = None

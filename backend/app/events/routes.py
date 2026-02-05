@@ -890,16 +890,18 @@ def join_event_by_code(invite_code):
     if min_deposit is not None:
         if deposit_amount < float(min_deposit):
             return jsonify({
-                "error": f"Minimum deposit of ${min_deposit:.2f} is required to join this event",
+                "error": f"Minimum deposit of ${min_deposit:.2f} is required. You provided ${deposit_amount:.2f}.",
                 "min_deposit": min_deposit,
-                "max_deposit": max_deposit
+                "max_deposit": max_deposit,
+                "provided_amount": deposit_amount
             }), 400
     
     if max_deposit is not None and deposit_amount > float(max_deposit):
         return jsonify({
-            "error": f"Deposit cannot exceed ${max_deposit:.2f}",
+            "error": f"Deposit cannot exceed ${max_deposit:.2f}. You provided ${deposit_amount:.2f}.",
             "min_deposit": min_deposit,
-            "max_deposit": max_deposit
+            "max_deposit": max_deposit,
+            "provided_amount": deposit_amount
         }), 400
     
     # Check reliability for joining

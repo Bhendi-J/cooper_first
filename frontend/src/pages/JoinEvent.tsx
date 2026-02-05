@@ -24,7 +24,7 @@ export default function JoinEvent() {
   const navigate = useNavigate();
   const { toast } = useToast();
   const { isAuthenticated } = useAuthStore();
-  
+
   const [isLoading, setIsLoading] = useState(true);
   const [isJoining, setIsJoining] = useState(false);
   const [eventPreview, setEventPreview] = useState<{
@@ -54,6 +54,9 @@ export default function JoinEvent() {
       try {
         const response = await eventsAPI.getByInviteCode(code);
         setEventPreview(response.data.event);
+        if (response.data.event.min_deposit) {
+          setDepositAmount(response.data.event.min_deposit.toString());
+        }
       } catch (err: any) {
         setError(err.response?.data?.error || 'Invalid or expired invite code');
       } finally {
@@ -72,7 +75,7 @@ export default function JoinEvent() {
       const deposit = parseFloat(depositAmount);
       const minDep = eventPreview.min_deposit || 0;
       const maxDep = eventPreview.max_deposit || Infinity;
-      
+
       if (isNaN(deposit) || deposit < minDep) {
         toast({
           title: 'Deposit Required',
@@ -81,7 +84,7 @@ export default function JoinEvent() {
         });
         return;
       }
-      
+
       if (maxDep !== null && deposit > maxDep) {
         toast({
           title: 'Deposit Too High',
@@ -97,7 +100,7 @@ export default function JoinEvent() {
       const response = await eventsAPI.joinByCode(code, {
         deposit_amount: depositAmount ? parseFloat(depositAmount) : 0
       });
-      
+
       // Check if approval is required
       if (response.status === 202 || response.data.status === 'pending') {
         toast({
@@ -200,7 +203,7 @@ export default function JoinEvent() {
           {eventPreview && (
             <div className="bg-background-surface rounded-xl p-6 mb-6">
               <h2 className="text-xl font-semibold mb-4">{eventPreview.name}</h2>
-              
+
               {eventPreview.description && (
                 <p className="text-muted-foreground mb-4">{eventPreview.description}</p>
               )}
@@ -210,7 +213,7 @@ export default function JoinEvent() {
                   <Users className="w-4 h-4 text-muted-foreground" />
                   <span>{eventPreview.participant_count} participants</span>
                 </div>
-                
+
                 <div className="flex items-center gap-3 text-sm">
                   <CheckCircle2 className="w-4 h-4 text-muted-foreground" />
                   <span>Created by {eventPreview.creator_name}</span>
@@ -240,10 +243,10 @@ export default function JoinEvent() {
                 {eventPreview.min_deposit && eventPreview.max_deposit
                   ? ` Amount must be between $${eventPreview.min_deposit} - $${eventPreview.max_deposit}`
                   : eventPreview.min_deposit
-                  ? ` Minimum: $${eventPreview.min_deposit}`
-                  : eventPreview.max_deposit
-                  ? ` Maximum: $${eventPreview.max_deposit}`
-                  : ''}
+                    ? ` Minimum: $${eventPreview.min_deposit}`
+                    : eventPreview.max_deposit
+                      ? ` Maximum: $${eventPreview.max_deposit}`
+                      : ''}
               </p>
               <div className="space-y-2">
                 <Label htmlFor="depositAmount">Your Deposit Amount</Label>

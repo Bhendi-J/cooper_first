@@ -250,15 +250,23 @@ export const eventsAPI = {
 
   // Get event preview by invite code (public)
   getByInviteCode: (code: string) =>
-    api.get<{ event: Partial<Event> & { creator_name: string; participant_count: number } }>(
+    api.get<{
+      event: Partial<Event> & {
+        creator_name: string;
+        participant_count: number;
+        min_deposit?: number;
+        max_deposit?: number;
+        deposit_required?: boolean;
+      }
+    }>(
       `/events/join/${code}`
     ),
 
   // Join an event using invite code with optional deposit
   joinByCode: (code: string, data?: { deposit_amount?: number }) =>
-    api.post<{ 
-      message: string; 
-      event_id?: string; 
+    api.post<{
+      message: string;
+      event_id?: string;
       event_name?: string;
       status?: 'pending' | 'approved';
       request_id?: string;
@@ -443,8 +451,8 @@ export const expensesAPI = {
 
   // Approve an expense (creator only)
   approve: (expenseId: string) =>
-    api.post<{ 
-      message: string; 
+    api.post<{
+      message: string;
       expense_id: string;
       shortfall_debts?: Array<{ user_id: string; amount: number; debt_id: string }>;
     }>(`/expenses/${expenseId}/approve`),
@@ -456,11 +464,11 @@ export const expensesAPI = {
   // Cancel a pending expense (expense creator only)
   cancel: (expenseId: string) =>
     api.post<{ message: string; expense_id: string }>(`/expenses/${expenseId}/cancel`),
-  
+
   // =====================
   // CASH EXPENSE METHODS
   // =====================
-  
+
   // Add a cash expense that requires approval from all members
   addCash: (data: CreateExpenseData) =>
     api.post<{
@@ -469,7 +477,7 @@ export const expensesAPI = {
       members_pending?: string[];
       message: string;
     }>('/expenses/cash', data),
-  
+
   // Approve a cash expense (as a member in the split)
   approveCash: (expenseId: string) =>
     api.post<{
@@ -478,11 +486,11 @@ export const expensesAPI = {
       members_remaining?: number;
       all_approved: boolean;
     }>(`/expenses/cash/${expenseId}/approve`),
-  
+
   // Reject a cash expense (as a member in the split)
   rejectCash: (expenseId: string, reason?: string) =>
     api.post<{ message: string; status: 'rejected' }>(`/expenses/cash/${expenseId}/reject`, { reason }),
-  
+
   // Get pending cash approvals for the current user
   getPendingCashApprovals: () =>
     api.get<{
@@ -678,12 +686,12 @@ export const walletsAPI = {
 
   // Get wallet transaction history
   getTransactions: (page = 1, perPage = 20) =>
-    api.get<{ 
-      transactions: WalletTransaction[]; 
-      page: number; 
-      per_page: number; 
-      total: number; 
-      pages: number 
+    api.get<{
+      transactions: WalletTransaction[];
+      page: number;
+      per_page: number;
+      total: number;
+      pages: number
     }>(`/wallets/transactions?page=${page}&per_page=${perPage}`),
 
   // Transfer to another user
@@ -769,7 +777,7 @@ export const settlementsAPI = {
 
   // Record a settlement payment
   settle: (data: { event_id: string; from_user_id: string; to_user_id: string; amount: number; payment_method?: string }) =>
-    api.post<{ 
+    api.post<{
       settlement: Settlement;
       debts_settled?: Array<{ debt_id: string; amount_settled: number; status: string }>;
     }>('/settlements/settle', data),
@@ -823,7 +831,7 @@ export const settlementsAPI = {
     api.get<{ refunds: Refund[] }>('/settlements/refunds'),
 
   // ==================== DEBT ENDPOINTS ====================
-  
+
   // Get current user's outstanding debts
   getMyDebts: () =>
     api.get<{ debts: UserDebt[]; restrictions: DebtRestrictions }>('/settlements/debts/my'),
@@ -871,13 +879,13 @@ export const settlementsAPI = {
 export const notificationsAPI = {
   // Get notifications with pagination
   getAll: (page = 1, perPage = 20, unreadOnly = false) =>
-    api.get<{ 
-      notifications: Notification[]; 
-      page: number; 
-      per_page: number; 
-      total: number; 
+    api.get<{
+      notifications: Notification[];
+      page: number;
+      per_page: number;
+      total: number;
       pages: number;
-      unread_count: number 
+      unread_count: number
     }>(`/notifications?page=${page}&per_page=${perPage}&unread_only=${unreadOnly}`),
 
   // Get unread count only
@@ -1212,9 +1220,9 @@ export const wellnessApi = {
 
   // Dismiss a reminder
   dismissReminder: (reminderType: string, referenceId?: string) =>
-    api.post('/wellness/dismiss-reminder', { 
-      reminder_type: reminderType, 
-      reference_id: referenceId 
+    api.post('/wellness/dismiss-reminder', {
+      reminder_type: reminderType,
+      reference_id: referenceId
     }),
 
   // Get spending breakdown by category
@@ -1237,13 +1245,13 @@ export const receiptApi = {
   scanReceipt: async (file: File): Promise<ReceiptScanResult> => {
     const formData = new FormData();
     formData.append('receipt', file);
-    
+
     const response = await api.post<ReceiptScanResult>('/expenses/scan-receipt', formData, {
       headers: {
         'Content-Type': 'multipart/form-data',
       },
     });
-    
+
     return response.data;
   },
 };
