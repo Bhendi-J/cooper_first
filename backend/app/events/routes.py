@@ -1084,38 +1084,72 @@ def get_join_requests(event_id):
 @jwt_required()
 def approve_join_request(event_id, request_id):
     """Approve a join request (creator only)."""
+    print(f"\n[APPROVE_JOIN] START - event_id={event_id}, request_id={request_id}")
+    
     event_oid = safe_object_id(event_id)
-    user_id = str(get_jwt_identity())
+    approver_id = str(get_jwt_identity())
+    request_oid = safe_object_id(request_id)
+    
+    print(f"[APPROVE_JOIN] approver_id={approver_id}")
     
     if not event_oid:
         return jsonify({"error": "Invalid event ID"}), 400
     
+    if not request_oid:
+        return jsonify({"error": "Invalid request ID"}), 400
+    
     event = mongo.events.find_one({"_id": event_oid})
     if not event:
+        print(f"[APPROVE_JOIN] ERROR - Event not found!")
         return jsonify({"error": "Event not found"}), 404
     
-    if str(event["creator_id"]) != user_id:
+    print(f"[APPROVE_JOIN] Event found: {event.get('name')}")
+    
+    if str(event["creator_id"]) != approver_id:
         return jsonify({"error": "Only creator can approve requests"}), 403
     
-    result = JoinRequestService.approve_join_request(
-        request_id=request_id,
-        approved_by=user_id
+    # Fetch the join request to get the user_id
+    join_request = mongo.join_requests.find_one({"_id": request_oid})
+    if not join_request:
+        print(f"[APPROVE_JOIN] ERROR - Join request not found!")
+        return jsonify({"error": "Join request not found"}), 404
+    
+    print(f"[APPROVE_JOIN] Join request found, status={join_request.get('status')}")
+    
+    if join_request.get("status") != "pending":
+        return jsonify({"error": "Request is not pending"}), 400
+    
+    target_user_id = str(join_request["user_id"])
+    print(f"[APPROVE_JOIN] Target user_id={target_user_id}")
+    
+    # Check participant count BEFORE approval
+    before_count = mongo.participants.count_documents({"event_id": event_oid})
+    print(f"[APPROVE_JOIN] Participant count BEFORE approval: {before_count}")
+    
+    # Call the service with the correct arguments
+    success, error = JoinRequestService.approve_join_request(
+        event_id=event_id,
+        user_id=target_user_id,
+        approver_id=approver_id
     )
     
-    if result.get("error"):
-        return jsonify({"error": result["error"]}), 400
+    # Check participant count AFTER approval
+    after_count = mongo.participants.count_documents({"event_id": event_oid})
+    print(f"[APPROVE_JOIN] Participant count AFTER approval: {after_count}")
     
-    # Notify user
-    if result.get("user_id"):
-        NotificationService.notify_join_approved(
-            user_id=result["user_id"],
-            event_id=event_id,
-            event_name=event["name"]
-        )
+    if not success:
+        print(f"[APPROVE_JOIN] ERROR from service: {error}")
+        return jsonify({"error": error}), 400
+    
+    # Verify event still exists
+    event_check = mongo.events.find_one({"_id": event_oid})
+    print(f"[APPROVE_JOIN] Event still exists: {event_check is not None}")
+    
+    print(f"[APPROVE_JOIN] SUCCESS - approval completed\n")
     
     return jsonify({
         "message": "Join request approved",
-        "status": result.get("status")
+        "status": "approved"
     })
 
 
@@ -1124,40 +1158,47 @@ def approve_join_request(event_id, request_id):
 def reject_join_request(event_id, request_id):
     """Reject a join request (creator only)."""
     event_oid = safe_object_id(event_id)
-    user_id = str(get_jwt_identity())
+    rejector_id = str(get_jwt_identity())
+    request_oid = safe_object_id(request_id)
     data = request.get_json() or {}
     
     if not event_oid:
         return jsonify({"error": "Invalid event ID"}), 400
     
+    if not request_oid:
+        return jsonify({"error": "Invalid request ID"}), 400
+    
     event = mongo.events.find_one({"_id": event_oid})
     if not event:
         return jsonify({"error": "Event not found"}), 404
     
-    if str(event["creator_id"]) != user_id:
+    if str(event["creator_id"]) != rejector_id:
         return jsonify({"error": "Only creator can reject requests"}), 403
     
-    result = JoinRequestService.reject_join_request(
-        request_id=request_id,
-        rejected_by=user_id,
+    # Fetch the join request to get the user_id
+    join_request = mongo.join_requests.find_one({"_id": request_oid})
+    if not join_request:
+        return jsonify({"error": "Join request not found"}), 404
+    
+    if join_request.get("status") != "pending":
+        return jsonify({"error": "Request is not pending"}), 400
+    
+    target_user_id = str(join_request["user_id"])
+    
+    # Call the service with the correct arguments
+    success, error = JoinRequestService.reject_join_request(
+        event_id=event_id,
+        user_id=target_user_id,
+        rejector_id=rejector_id,
         reason=data.get("reason")
     )
     
-    if result.get("error"):
-        return jsonify({"error": result["error"]}), 400
-    
-    # Notify user
-    if result.get("user_id"):
-        NotificationService.notify_join_rejected(
-            user_id=result["user_id"],
-            event_id=event_id,
-            event_name=event["name"],
-            reason=data.get("reason")
-        )
+    if not success:
+        return jsonify({"error": error}), 400
     
     return jsonify({
         "message": "Join request rejected",
-        "status": result.get("status")
+        "status": "rejected"
     })
 
 
