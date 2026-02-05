@@ -66,6 +66,16 @@ def add_expense():
     if not all_participants:
         return jsonify({"error": "No active participants"}), 400
 
+    # Deduplicate participants by user_id
+    seen_user_ids = set()
+    unique_participants = []
+    for p in all_participants:
+        uid = str(p["user_id"])
+        if uid not in seen_user_ids:
+            seen_user_ids.add(uid)
+            unique_participants.append(p)
+    all_participants = unique_participants
+
     # Filter participants if selected_members is provided
     if selected_members and len(selected_members) > 0:
         participants = [p for p in all_participants if str(p["user_id"]) in selected_members]
@@ -170,7 +180,12 @@ def add_expense():
     if adjusted_rules.get("approval_required"):
         approval_required = True
     
-    needs_approval = approval_required or amount >= auto_approve_under
+    # SKIP APPROVAL FOR CREATOR - creator's expenses are auto-approved
+    is_creator = str(event.get("creator_id")) == user_id
+    if is_creator:
+        needs_approval = False
+    else:
+        needs_approval = approval_required or amount >= auto_approve_under
 
     # Create the expense record
     expense = {
@@ -298,30 +313,14 @@ def add_expense():
             {"$set": {"merkle_proof": proof}}
         )
 
+    # Update merkle root only (pool deduction already updated total_spent and balances)
     mongo.events.update_one(
         {"_id": ObjectId(event_id)},
-        {
-            "$set": {"merkle_root": merkle_root},
-            "$inc": {"total_spent": amount}
-        }
+        {"$set": {"merkle_root": merkle_root}}
     )
 
-    # Update participant balances
-    for p in participants:
-        if str(p["user_id"]) == user_id:
-            balance_change = amount - split_amounts_dict.get(str(p["user_id"]), 0)
-        else:
-            balance_change = -split_amounts_dict.get(str(p["user_id"]), 0)
-
-        mongo.participants.update_one(
-            {"_id": p["_id"]},
-            {
-                "$inc": {
-                    "balance": balance_change,
-                    "total_spent": split_amounts_dict.get(str(p["user_id"]), 0)
-                }
-            }
-        )
+    # Note: Participant balances already updated by PoolService.deduct_expense()
+    # No need to update them again here
 
     # Log expense activity
     mongo.activities.insert_one({
@@ -428,16 +427,22 @@ def get_pending_approvals(event_id):
     """Get expenses pending approval for an event (creator only)."""
     user_id = get_jwt_identity()
     
-    event = mongo.events.find_one({"_id": ObjectId(event_id)})
-    if not event:
-        return jsonify({"error": "Event not found"}), 404
-    
-    if str(event["creator_id"]) != user_id:
-        return jsonify({"error": "Only creator can view pending approvals"}), 403
-    
-    pending = ApprovalService.get_pending_approvals(event_id)
-    
-    return jsonify({"pending_approvals": pending})
+    try:
+        event = mongo.events.find_one({"_id": ObjectId(event_id)})
+        if not event:
+            return jsonify({"error": "Event not found"}), 404
+        
+        if str(event["creator_id"]) != user_id:
+            return jsonify({"error": "Only creator can view pending approvals"}), 403
+        
+        pending = ApprovalService.get_pending_approvals(event_id)
+        
+        return jsonify({"pending_approvals": pending})
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to get pending approvals: {str(e)}"}), 500
 
 
 @expenses_bp.route("/<expense_id>/approve", methods=["POST"])
@@ -446,89 +451,40 @@ def approve_expense(expense_id):
     """Approve an expense (creator only)."""
     user_id = get_jwt_identity()
     
-    expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
-    if not expense:
-        return jsonify({"error": "Expense not found"}), 404
-    
-    event = mongo.events.find_one({"_id": expense["event_id"]})
-    if not event:
-        return jsonify({"error": "Event not found"}), 404
-    
-    if str(event["creator_id"]) != user_id:
-        return jsonify({"error": "Only creator can approve expenses"}), 403
-    
-    # Approve the expense
-    result = ApprovalService.approve_expense(
-        expense_id=expense_id,
-        approved_by=user_id
-    )
-    
-    if result.get("error"):
-        return jsonify({"error": result["error"]}), 400
-    
-    event_id = str(expense["event_id"])
-    amount = expense["amount"]
-    
-    # Now deduct from pool
-    pool_result = PoolService.deduct_expense(event_id, amount, expense_id)
-    
-    shortfall_debts = []
-    if pool_result.get("shortfall", 0) > 0:
-        # Handle shortfall with wallet fallback
-        for split in expense.get("splits", []):
-            split_user_id = split["user_id"]
-            split_amount = split["amount"]
-            
-            fallback_result = WalletFallbackService.handle_shortfall(
-                user_id=split_user_id,
-                event_id=event_id,
-                amount=split_amount
-            )
-            
-            if fallback_result.get("debt_created"):
-                shortfall_debts.append({
-                    "user_id": split_user_id,
-                    "amount": fallback_result.get("debt_amount"),
-                    "debt_id": fallback_result.get("debt_id")
-                })
-                
-                NotificationService.notify_debt_created(
-                    user_id=split_user_id,
-                    amount=fallback_result.get("debt_amount"),
-                    event_id=event_id,
-                    expense_id=expense_id
-                )
-    
-    # Update expense status
-    mongo.expenses.update_one(
-        {"_id": ObjectId(expense_id)},
-        {"$set": {
-            "status": "approved",
-            "approval_status": "approved",
-            "approved_at": datetime.utcnow(),
-            "approved_by": ObjectId(user_id)
-        }}
-    )
-    
-    # Update event totals
-    mongo.events.update_one(
-        {"_id": expense["event_id"]},
-        {"$inc": {"total_spent": amount}}
-    )
-    
-    # Notify the expense creator
-    NotificationService.notify_expense_approved(
-        user_id=str(expense["payer_id"]),
-        expense_id=expense_id,
-        amount=amount,
-        event_name=event.get("name", "Event")
-    )
-    
-    return jsonify({
-        "message": "Expense approved",
-        "expense_id": expense_id,
-        "shortfall_debts": shortfall_debts if shortfall_debts else None
-    })
+    try:
+        expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+        if not expense:
+            return jsonify({"error": "Expense not found"}), 404
+        
+        event = mongo.events.find_one({"_id": expense["event_id"]})
+        if not event:
+            return jsonify({"error": "Event not found"}), 404
+        
+        if str(event["creator_id"]) != user_id:
+            return jsonify({"error": "Only creator can approve expenses"}), 403
+        
+        # Approve the expense using ApprovalService
+        success, error_message = ApprovalService.approve_expense(
+            expense_id=expense_id,
+            approver_id=user_id
+        )
+        
+        if not success:
+            return jsonify({"error": error_message or "Failed to approve expense"}), 400
+        
+        # Get updated expense for response
+        updated_expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+        
+        return jsonify({
+            "message": "Expense approved",
+            "expense_id": expense_id,
+            "status": updated_expense.get("status") if updated_expense else "approved"
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to approve expense: {str(e)}"}), 500
 
 
 @expenses_bp.route("/<expense_id>/reject", methods=["POST"])
@@ -538,54 +494,39 @@ def reject_expense(expense_id):
     user_id = get_jwt_identity()
     data = request.get_json() or {}
     
-    expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
-    if not expense:
-        return jsonify({"error": "Expense not found"}), 404
-    
-    event = mongo.events.find_one({"_id": expense["event_id"]})
-    if not event:
-        return jsonify({"error": "Event not found"}), 404
-    
-    if str(event["creator_id"]) != user_id:
-        return jsonify({"error": "Only creator can reject expenses"}), 403
-    
-    reason = data.get("reason", "")
-    
-    # Reject the expense
-    result = ApprovalService.reject_expense(
-        expense_id=expense_id,
-        rejected_by=user_id,
-        reason=reason
-    )
-    
-    if result.get("error"):
-        return jsonify({"error": result["error"]}), 400
-    
-    # Update expense status
-    mongo.expenses.update_one(
-        {"_id": ObjectId(expense_id)},
-        {"$set": {
-            "status": "rejected",
-            "approval_status": "rejected",
-            "rejected_at": datetime.utcnow(),
-            "rejected_by": ObjectId(user_id),
-            "rejection_reason": reason
-        }}
-    )
-    
-    # Notify the expense creator
-    NotificationService.notify_expense_rejected(
-        user_id=str(expense["payer_id"]),
-        expense_id=expense_id,
-        amount=expense["amount"],
-        event_name=event.get("name", "Event"),
-        reason=reason
-    )
-    
-    return jsonify({
-        "message": "Expense rejected",
-        "expense_id": expense_id
-    })
+    try:
+        expense = mongo.expenses.find_one({"_id": ObjectId(expense_id)})
+        if not expense:
+            return jsonify({"error": "Expense not found"}), 404
+        
+        event = mongo.events.find_one({"_id": expense["event_id"]})
+        if not event:
+            return jsonify({"error": "Event not found"}), 404
+        
+        if str(event["creator_id"]) != user_id:
+            return jsonify({"error": "Only creator can reject expenses"}), 403
+        
+        reason = data.get("reason", "Rejected by creator")
+        
+        # Reject the expense using ApprovalService
+        success, error_message = ApprovalService.reject_expense(
+            expense_id=expense_id,
+            rejector_id=user_id,
+            reason=reason
+        )
+        
+        if not success:
+            return jsonify({"error": error_message or "Failed to reject expense"}), 400
+        
+        return jsonify({
+            "message": "Expense rejected",
+            "expense_id": expense_id
+        })
+        
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        return jsonify({"error": f"Failed to reject expense: {str(e)}"}), 500
 
 
 @expenses_bp.route("/<expense_id>/cancel", methods=["POST"])

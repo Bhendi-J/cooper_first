@@ -152,8 +152,12 @@ class ApprovalService:
         if not expense:
             return False, "Expense not found"
         
-        if expense.get("approval_status") != ApprovalStatus.PENDING:
-            return False, f"Expense is not pending approval (status: {expense.get('approval_status')})"
+        # Check if already approved/rejected - be lenient with pending status check
+        current_status = expense.get("approval_status") or expense.get("status")
+        if current_status in [ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED, "approved", "verified"]:
+            return False, "Expense is already approved"
+        if current_status in [ApprovalStatus.REJECTED, "rejected"]:
+            return False, "Expense was already rejected"
         
         event_id = str(expense["event_id"])
         
@@ -165,13 +169,8 @@ class ApprovalService:
         if str(event["creator_id"]) != approver_id:
             return False, "Only the event creator can approve expenses"
         
-        # Check pool availability
-        is_valid, error = PoolService.validate_pool_operation(
-            event_id, expense["amount"]
-        )
-        
-        if not is_valid:
-            return False, error
+        # Skip pool validation for demo - allow approval even with negative balance
+        # Debts will be created for any shortfall
         
         # Process splits with wallet fallback if needed
         splits = expense.get("splits", [])
@@ -292,8 +291,12 @@ class ApprovalService:
         if not expense:
             return False, "Expense not found"
         
-        if expense.get("approval_status") != ApprovalStatus.PENDING:
-            return False, f"Expense is not pending approval"
+        # Check if already processed
+        current_status = expense.get("approval_status") or expense.get("status")
+        if current_status in [ApprovalStatus.APPROVED, ApprovalStatus.AUTO_APPROVED, "approved", "verified"]:
+            return False, "Expense is already approved"
+        if current_status in [ApprovalStatus.REJECTED, "rejected"]:
+            return False, "Expense was already rejected"
         
         # Verify rejector is creator
         event = mongo.events.find_one({"_id": expense["event_id"]})

@@ -37,9 +37,29 @@ def summary():
     ]
     total_expense_result = list(mongo.expenses.aggregate(total_expense_pipeline))
     total_expense_amount = total_expense_result[0]["total"] if total_expense_result else 0
+    
+    # Get user's balance across all events (sum of participant balances)
+    # This reflects deposits minus their share of expenses
+    balance_pipeline = [
+        {"$match": {"user_id": user_oid}},
+        {"$group": {
+            "_id": None, 
+            "total_balance": {"$sum": "$balance"},
+            "total_deposits": {"$sum": "$deposit_amount"}
+        }}
+    ]
+    balance_result = list(mongo.participants.aggregate(balance_pipeline))
+    total_balance = balance_result[0]["total_balance"] if balance_result else 0
+    total_deposits = balance_result[0]["total_deposits"] if balance_result else 0
+    
+    # Calculate net position (positive = owed money, negative = owes money)
+    net_position = round(total_balance, 2)
 
     return jsonify({
         "events": events_count,
         "expense_count": expense_count,
-        "total_expense_amount": total_expense_amount
+        "total_expense_amount": round(total_expense_amount, 2),
+        "total_balance": round(total_balance, 2),
+        "total_deposits": round(total_deposits, 2),
+        "net_position": net_position
     })
