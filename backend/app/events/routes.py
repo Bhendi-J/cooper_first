@@ -5,6 +5,10 @@ from datetime import datetime
 import secrets
 import hashlib
 from app.extensions import db as mongo
+from app.core import (
+    JoinRequestService, RuleEnforcementService, ReliabilityService,
+    NotificationService, PoolService
+)
 
 events_bp = Blueprint("events", __name__)
 
@@ -47,6 +51,36 @@ def create_event():
     while mongo.events.find_one({"invite_code": invite_code}):
         invite_code = generate_invite_code()
 
+    # Parse rules with all options
+    rules_data = data.get("rules", {})
+    event_rules = {
+        # Spending limits
+        "spending_limit": rules_data.get("spending_limit"),
+        "max_expense_per_transaction": rules_data.get("max_expense_per_transaction"),
+        "min_expense_per_transaction": rules_data.get("min_expense_per_transaction"),
+        "max_cumulative_spend_per_user": rules_data.get("max_cumulative_spend_per_user"),
+        
+        # Deposit limits
+        "min_deposit": rules_data.get("min_deposit"),
+        "max_deposit": rules_data.get("max_deposit"),
+        "deposit_margin_min": rules_data.get("deposit_margin_min"),
+        "deposit_margin_max": rules_data.get("deposit_margin_max"),
+        
+        # Approval settings
+        "approval_required": rules_data.get("approval_required", False),
+        "auto_approve_under": rules_data.get("auto_approve_under", 100),
+        "approval_required_threshold": rules_data.get("approval_required_threshold"),
+        "warning_threshold": rules_data.get("warning_threshold"),
+        
+        # Category restrictions
+        "restricted_categories": rules_data.get("restricted_categories", []),
+        "blocked_categories": rules_data.get("blocked_categories", []),
+        
+        # Other settings
+        "allow_wallet_fallback": rules_data.get("allow_wallet_fallback", True),
+        "max_debt_allowed": rules_data.get("max_debt_allowed"),
+    }
+
     event = {
         "name": data["name"],
         "description": data.get("description", ""),
@@ -58,11 +92,7 @@ def create_event():
         "invite_enabled": True,
         "shared_wallet_id": None,
         "merkle_root": None,
-        "rules": data.get("rules", {
-            "spending_limit": None,
-            "approval_required": False,
-            "auto_approve_under": 100
-        }),
+        "rules": event_rules,
         "total_pool": 0,
         "total_spent": 0,
         "created_at": datetime.utcnow(),
@@ -220,8 +250,8 @@ def get_event_by_invite_code(invite_code):
 @events_bp.route("/join/<invite_code>", methods=["POST"])
 @jwt_required()
 def join_event_by_code(invite_code):
-    """Join an event using invite code."""
-    user_id = safe_object_id(get_jwt_identity())
+    """Join an event using invite code with approval workflow."""
+    user_id = str(get_jwt_identity())
     
     event = mongo.events.find_one({"invite_code": invite_code.upper()})
     
@@ -234,14 +264,65 @@ def join_event_by_code(invite_code):
     if event["status"] != "active":
         return jsonify({"error": "Event is no longer active"}), 400
     
-    event_oid = event["_id"]
+    event_id = str(event["_id"])
     
-    if is_participant(event_oid, user_id):
+    if is_participant(event["_id"], safe_object_id(user_id)):
         return jsonify({"error": "Already a participant"}), 409
     
+    # Check reliability for joining
+    # Returns: (can_join, message, required_deposit_multiplier)
+    can_join, reliability_message, deposit_multiplier = ReliabilityService.check_can_join_event(user_id, event_id)
+    if not can_join:
+        return jsonify({
+            "error": "Cannot join event",
+            "reason": reliability_message
+        }), 403
+    
+    # Validate against event rules
+    # Returns: (is_valid, error_message, violation_type)
+    is_valid, error_message, violation_type = RuleEnforcementService.validate_join(event_id, user_id)
+    if not is_valid:
+        return jsonify({
+            "error": "Cannot join event",
+            "violations": [{"type": violation_type, "message": error_message}]
+        }), 403
+    
+    # Check if approval is required
+    rules = event.get("rules", {})
+    requires_approval = rules.get("join_approval_required", False)
+    
+    if requires_approval:
+        # Create join request
+        request_result = JoinRequestService.create_join_request(
+            event_id=event_id,
+            user_id=user_id,
+            join_method="invite_code"
+        )
+        
+        if request_result.get("error"):
+            return jsonify({"error": request_result["error"]}), 400
+        
+        # Notify creator
+        NotificationService.notify_join_request(
+            creator_id=str(event["creator_id"]),
+            event_id=event_id,
+            event_name=event["name"],
+            user_id=user_id,
+            requires_approval=True
+        )
+        
+        return jsonify({
+            "message": "Join request submitted for approval",
+            "status": "pending",
+            "event_id": event_id,
+            "event_name": event["name"],
+            "request_id": request_result.get("request_id")
+        }), 202
+    
+    # Direct join (no approval needed)
     mongo.participants.insert_one({
-        "event_id": event_oid,
-        "user_id": user_id,
+        "event_id": event["_id"],
+        "user_id": safe_object_id(user_id),
         "deposit_amount": 0,
         "total_spent": 0,
         "balance": 0,
@@ -251,11 +332,126 @@ def join_event_by_code(invite_code):
         "created_at": datetime.utcnow()
     })
     
+    # Notify creator
+    NotificationService.notify_join_request(
+        creator_id=str(event["creator_id"]),
+        event_id=event_id,
+        event_name=event["name"],
+        user_id=user_id,
+        requires_approval=False
+    )
+    
     return jsonify({
         "message": "Joined event successfully",
-        "event_id": str(event_oid),
+        "event_id": event_id,
         "event_name": event["name"]
     }), 201
+
+
+# ------------------ JOIN REQUEST MANAGEMENT ------------------
+
+@events_bp.route("/<event_id>/join-requests", methods=["GET"])
+@jwt_required()
+def get_join_requests(event_id):
+    """Get pending join requests for an event (creator only)."""
+    event_oid = safe_object_id(event_id)
+    user_id = safe_object_id(get_jwt_identity())
+    
+    if not event_oid:
+        return jsonify({"error": "Invalid event ID"}), 400
+    
+    event = mongo.events.find_one({"_id": event_oid})
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+    
+    # Only creator can view join requests
+    if event["creator_id"] != user_id:
+        return jsonify({"error": "Only creator can view join requests"}), 403
+    
+    requests = JoinRequestService.get_pending_requests(event_id)
+    
+    return jsonify({"requests": requests})
+
+
+@events_bp.route("/<event_id>/join-requests/<request_id>/approve", methods=["POST"])
+@jwt_required()
+def approve_join_request(event_id, request_id):
+    """Approve a join request (creator only)."""
+    event_oid = safe_object_id(event_id)
+    user_id = str(get_jwt_identity())
+    
+    if not event_oid:
+        return jsonify({"error": "Invalid event ID"}), 400
+    
+    event = mongo.events.find_one({"_id": event_oid})
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+    
+    if str(event["creator_id"]) != user_id:
+        return jsonify({"error": "Only creator can approve requests"}), 403
+    
+    result = JoinRequestService.approve_join_request(
+        request_id=request_id,
+        approved_by=user_id
+    )
+    
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), 400
+    
+    # Notify user
+    if result.get("user_id"):
+        NotificationService.notify_join_approved(
+            user_id=result["user_id"],
+            event_id=event_id,
+            event_name=event["name"]
+        )
+    
+    return jsonify({
+        "message": "Join request approved",
+        "status": result.get("status")
+    })
+
+
+@events_bp.route("/<event_id>/join-requests/<request_id>/reject", methods=["POST"])
+@jwt_required()
+def reject_join_request(event_id, request_id):
+    """Reject a join request (creator only)."""
+    event_oid = safe_object_id(event_id)
+    user_id = str(get_jwt_identity())
+    data = request.get_json() or {}
+    
+    if not event_oid:
+        return jsonify({"error": "Invalid event ID"}), 400
+    
+    event = mongo.events.find_one({"_id": event_oid})
+    if not event:
+        return jsonify({"error": "Event not found"}), 404
+    
+    if str(event["creator_id"]) != user_id:
+        return jsonify({"error": "Only creator can reject requests"}), 403
+    
+    result = JoinRequestService.reject_join_request(
+        request_id=request_id,
+        rejected_by=user_id,
+        reason=data.get("reason")
+    )
+    
+    if result.get("error"):
+        return jsonify({"error": result["error"]}), 400
+    
+    # Notify user
+    if result.get("user_id"):
+        NotificationService.notify_join_rejected(
+            user_id=result["user_id"],
+            event_id=event_id,
+            event_name=event["name"],
+            reason=data.get("reason")
+        )
+    
+    return jsonify({
+        "message": "Join request rejected",
+        "status": result.get("status")
+    })
 
 
 @events_bp.route("/<event_id>/invite-link", methods=["GET"])
@@ -395,15 +591,10 @@ def deposit(event_id):
         
         intent_response = finternet.create_payment_intent(
             amount=str(amount),
-            currency=data.get("currency", "USDC"),
-            payment_type="CONDITIONAL",
+            currency=data.get("currency", "USD"),
+            payment_type="DELIVERY_VS_PAYMENT",
             settlement_method="OFF_RAMP_MOCK",
-            description=f"Deposit to event: {event.get('name', 'Event')}",
-            metadata={
-                "user_id": str(user_id),
-                "event_id": str(event_oid),
-                "type": "deposit"
-            }
+            description=f"Deposit to event: {event.get('name', 'Event')}"
         )
         
         if "error" in intent_response:

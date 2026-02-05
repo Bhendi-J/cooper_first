@@ -62,11 +62,21 @@ export default function JoinEvent() {
     setIsJoining(true);
     try {
       const response = await eventsAPI.joinByCode(code);
-      toast({
-        title: 'Successfully joined!',
-        description: `You've joined ${response.data.event_name}`,
-      });
-      navigate(`/events/${response.data.event_id}`);
+      
+      // Check if approval is required
+      if (response.status === 202 || response.data.status === 'pending') {
+        toast({
+          title: 'Request Submitted',
+          description: 'Your join request has been submitted for approval. You will be notified when approved.',
+        });
+        navigate('/dashboard');
+      } else {
+        toast({
+          title: 'Successfully joined!',
+          description: `You've joined ${response.data.event_name}`,
+        });
+        navigate(`/events/${response.data.event_id}`);
+      }
     } catch (err: any) {
       if (err.response?.status === 409) {
         // Already a participant
@@ -75,6 +85,13 @@ export default function JoinEvent() {
           description: 'You are already a participant of this event.',
         });
         navigate('/dashboard');
+      } else if (err.response?.status === 403) {
+        // Reliability restrictions or not allowed
+        toast({
+          title: 'Cannot join event',
+          description: err.response?.data?.reason || err.response?.data?.error || 'You are not allowed to join this event.',
+          variant: 'destructive',
+        });
       } else {
         toast({
           title: 'Failed to join',

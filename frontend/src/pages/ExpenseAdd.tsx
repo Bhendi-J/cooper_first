@@ -43,13 +43,14 @@ export default function ExpenseAdd() {
     amount: '',
     description: '',
     category: '',
-    paymentType: 'wallet' as 'wallet' | 'cash',
-    splitType: 'equal' as 'equal' | 'custom',
+    paymentType: 'wallet' as 'wallet' | 'cash' | 'gateway',
+    splitType: 'equal' as 'equal' | 'custom' | 'exact',
   });
 
   // Get participants from event
   const participants = event?.participants || [];
   const [selectedMembers, setSelectedMembers] = useState<string[]>([]);
+  const [customAmounts, setCustomAmounts] = useState<Record<string, string>>({});
 
   // Fetch event data on mount
   useEffect(() => {
@@ -95,25 +96,91 @@ export default function ExpenseAdd() {
     setIsLoading(true);
 
     try {
-      await expensesAPI.add({
+      // Build split details based on split type
+      let splitDetails: Record<string, any> = {};
+      let splitType = formData.splitType;
+      
+      if (formData.splitType === 'equal') {
+        splitType = 'equal';
+      } else if (formData.splitType === 'custom') {
+        // Custom: equal split among selected members only
+        splitType = 'equal';
+        // Only include selected members - backend will handle the split
+      } else if (formData.splitType === 'exact') {
+        // Exact: specific amounts per member
+        splitType = 'exact';
+        splitDetails = {
+          amounts: Object.fromEntries(
+            Object.entries(customAmounts)
+              .filter(([_, v]) => parseFloat(v) > 0)
+              .map(([k, v]) => [k, parseFloat(v)])
+          ),
+        };
+      }
+
+      const expenseData = {
         event_id: id,
         amount: parseFloat(formData.amount),
         description: formData.description || undefined,
-        // category_id would be used if backend returns category IDs
-      });
+        split_type: splitType,
+        split_details: Object.keys(splitDetails).length > 0 ? splitDetails : undefined,
+        selected_members: formData.splitType === 'custom' ? selectedMembers : undefined,
+      };
 
-      toast({
-        title: 'Expense added!',
-        description: `₹${formData.amount} has been recorded and split among ${selectedMembers.length} members.`,
-      });
+      // Handle payment gateway option
+      if (formData.paymentType === 'gateway') {
+        const paymentResponse = await expensesAPI.addWithPayment(expenseData);
+        
+        // Store for confirmation after payment
+        localStorage.setItem('pendingExpenseId', paymentResponse.data.pending_expense_id);
+        localStorage.setItem('pendingExpenseEventId', id);
+        
+        // Direct redirect to payment gateway
+        window.location.href = paymentResponse.data.payment_url;
+        return;
+      }
+
+      // Regular expense flow (wallet or cash)
+      const response = await expensesAPI.add(expenseData);
+
+      // Check if expense requires approval
+      if (response.data.status === 'pending_approval') {
+        toast({
+          title: 'Expense submitted for approval',
+          description: `₹${formData.amount} expense requires creator approval before being processed.`,
+        });
+      } else {
+        toast({
+          title: 'Expense added!',
+          description: `₹${formData.amount} has been recorded and split among ${selectedMembers.length} members.`,
+        });
+        
+        // Show debt notification if any shortfalls occurred
+        if (response.data.shortfall_debts && response.data.shortfall_debts.length > 0) {
+          toast({
+            title: 'Pool shortfall detected',
+            description: 'Some participants have been notified about outstanding balances.',
+            variant: 'default',
+          });
+        }
+      }
 
       navigate(`/events/${id}`);
     } catch (error: any) {
-      toast({
-        title: 'Failed to add expense',
-        description: error.response?.data?.error || 'Something went wrong',
-        variant: 'destructive',
-      });
+      // Handle rule violations
+      if (error.response?.data?.violations) {
+        toast({
+          title: 'Expense violates rules',
+          description: error.response.data.violations.map((v: any) => v.message || v.type).join(', '),
+          variant: 'destructive',
+        });
+      } else {
+        toast({
+          title: 'Failed to add expense',
+          description: error.response?.data?.error || 'Something went wrong',
+          variant: 'destructive',
+        });
+      }
     } finally {
       setIsLoading(false);
     }
@@ -232,11 +299,11 @@ export default function ExpenseAdd() {
             className="space-y-3"
           >
             <Label>Payment Method</Label>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-4">
               <button
                 type="button"
                 onClick={() => setFormData({ ...formData, paymentType: 'wallet' })}
-                className={`p-5 rounded-xl flex items-center gap-4 transition-all ${
+                className={`p-5 rounded-xl flex flex-col items-center gap-3 transition-all ${
                   formData.paymentType === 'wallet'
                     ? 'glass-card-glow border-primary'
                     : 'glass-card'
@@ -257,16 +324,46 @@ export default function ExpenseAdd() {
                     }`}
                   />
                 </div>
-                <div className="text-left">
-                  <p className="font-semibold">Shared Wallet</p>
-                  <p className="text-sm text-muted-foreground">Pay from pool</p>
+                <div className="text-center">
+                  <p className="font-semibold text-sm">Shared Wallet</p>
+                  <p className="text-xs text-muted-foreground">From pool</p>
+                </div>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => setFormData({ ...formData, paymentType: 'gateway' })}
+                className={`p-5 rounded-xl flex flex-col items-center gap-3 transition-all ${
+                  formData.paymentType === 'gateway'
+                    ? 'glass-card-glow border-primary'
+                    : 'glass-card'
+                }`}
+              >
+                <div
+                  className={`w-12 h-12 rounded-lg flex items-center justify-center ${
+                    formData.paymentType === 'gateway'
+                      ? 'gradient-primary'
+                      : 'bg-background-surface'
+                  }`}
+                >
+                  <IndianRupee
+                    className={`w-6 h-6 ${
+                      formData.paymentType === 'gateway'
+                        ? 'text-primary-foreground'
+                        : 'text-muted-foreground'
+                    }`}
+                  />
+                </div>
+                <div className="text-center">
+                  <p className="font-semibold text-sm">Pay Now</p>
+                  <p className="text-xs text-muted-foreground">UPI/Card</p>
                 </div>
               </button>
 
               <button
                 type="button"
                 onClick={() => setFormData({ ...formData, paymentType: 'cash' })}
-                className={`p-5 rounded-xl flex items-center gap-4 transition-all ${
+                className={`p-5 rounded-xl flex flex-col items-center gap-3 transition-all ${
                   formData.paymentType === 'cash'
                     ? 'glass-card-glow border-primary'
                     : 'glass-card'
@@ -287,9 +384,9 @@ export default function ExpenseAdd() {
                     }`}
                   />
                 </div>
-                <div className="text-left">
-                  <p className="font-semibold">Cash</p>
-                  <p className="text-sm text-muted-foreground">Needs approval</p>
+                <div className="text-center">
+                  <p className="font-semibold text-sm">Cash</p>
+                  <p className="text-xs text-muted-foreground">Manual</p>
                 </div>
               </button>
             </div>
@@ -303,7 +400,7 @@ export default function ExpenseAdd() {
             className="space-y-3"
           >
             <Label>Split Type</Label>
-            <div className="grid grid-cols-2 gap-4">
+            <div className="grid grid-cols-3 gap-3">
               <button
                 type="button"
                 onClick={() => {
@@ -316,9 +413,9 @@ export default function ExpenseAdd() {
                     : 'glass-card'
                 }`}
               >
-                <Users className="w-6 h-6 mx-auto mb-2" />
-                <p className="font-semibold">Split Equally</p>
-                <p className="text-xs text-muted-foreground">Among all members</p>
+                <Users className="w-5 h-5 mx-auto mb-2" />
+                <p className="font-semibold text-sm">Equal</p>
+                <p className="text-xs text-muted-foreground">All members</p>
               </button>
 
               <button
@@ -330,9 +427,29 @@ export default function ExpenseAdd() {
                     : 'glass-card'
                 }`}
               >
-                <Tag className="w-6 h-6 mx-auto mb-2" />
-                <p className="font-semibold">Custom Split</p>
-                <p className="text-xs text-muted-foreground">Select members</p>
+                <Tag className="w-5 h-5 mx-auto mb-2" />
+                <p className="font-semibold text-sm">Select</p>
+                <p className="text-xs text-muted-foreground">Pick members</p>
+              </button>
+
+              <button
+                type="button"
+                onClick={() => {
+                  setFormData({ ...formData, splitType: 'exact' });
+                  // Initialize custom amounts for each participant
+                  const amounts: Record<string, string> = {};
+                  participants.forEach(p => { amounts[p.user_id] = ''; });
+                  setCustomAmounts(amounts);
+                }}
+                className={`p-4 rounded-xl text-center transition-all ${
+                  formData.splitType === 'exact'
+                    ? 'glass-card-glow border-primary'
+                    : 'glass-card'
+                }`}
+              >
+                <IndianRupee className="w-5 h-5 mx-auto mb-2" />
+                <p className="font-semibold text-sm">Exact</p>
+                <p className="text-xs text-muted-foreground">Set amounts</p>
               </button>
             </div>
           </motion.div>
@@ -378,6 +495,55 @@ export default function ExpenseAdd() {
               <p className="text-sm text-muted-foreground">
                 {selectedMembers.length} members selected • ₹{perPersonAmount} per person
               </p>
+            </motion.div>
+          )}
+
+          {/* Exact Amounts (Per Member) */}
+          {formData.splitType === 'exact' && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              className="space-y-3"
+            >
+              <div className="flex items-center justify-between">
+                <Label>Set Amount Per Member</Label>
+                <span className={`text-sm ${
+                  Object.values(customAmounts).reduce((sum, v) => sum + (parseFloat(v) || 0), 0) === parseFloat(formData.amount || '0')
+                    ? 'text-success'
+                    : 'text-warning'
+                }`}>
+                  Total: ₹{Object.values(customAmounts).reduce((sum, v) => sum + (parseFloat(v) || 0), 0).toFixed(2)}
+                  {formData.amount && ` / ₹${formData.amount}`}
+                </span>
+              </div>
+              <div className="glass-card p-4 rounded-xl space-y-3">
+                {participants.map((member) => (
+                  <div key={member.user_id} className="flex items-center gap-3">
+                    <div className="w-10 h-10 rounded-full bg-background-surface flex items-center justify-center text-sm font-bold flex-shrink-0">
+                      {member.user_name?.charAt(0) || 'U'}
+                    </div>
+                    <span className="font-medium flex-1">{member.user_name}</span>
+                    <div className="relative w-28">
+                      <span className="absolute left-3 top-1/2 -translate-y-1/2 text-muted-foreground">₹</span>
+                      <Input
+                        type="number"
+                        placeholder="0"
+                        value={customAmounts[member.user_id] || ''}
+                        onChange={(e) => setCustomAmounts({
+                          ...customAmounts,
+                          [member.user_id]: e.target.value
+                        })}
+                        className="pl-7 h-10 bg-background text-right"
+                      />
+                    </div>
+                  </div>
+                ))}
+              </div>
+              {formData.amount && Object.values(customAmounts).reduce((sum, v) => sum + (parseFloat(v) || 0), 0) !== parseFloat(formData.amount) && (
+                <p className="text-sm text-warning">
+                  ⚠️ Individual amounts must add up to ₹{formData.amount}
+                </p>
+              )}
             </motion.div>
           )}
 

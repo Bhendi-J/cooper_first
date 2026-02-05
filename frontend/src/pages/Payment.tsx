@@ -45,13 +45,23 @@ export default function Payment() {
                 description: 'Redirecting to Finternet payment page...',
             });
 
-            // Redirect to Finternet payment page
+            // Open Finternet payment page in new tab
             if (intent.paymentUrl) {
-                // Store the intent ID and return URL for the callback
+                // Store the intent ID and return URL for reference
                 localStorage.setItem('finternet_intent_id', intent.id);
                 localStorage.setItem('finternet_return_url', returnUrl);
-                // Redirect to real Finternet payment page
-                window.location.href = intent.paymentUrl;
+                // Open in new tab instead of redirecting
+                window.open(intent.paymentUrl, '_blank');
+                
+                toast({
+                    title: 'Payment Page Opened',
+                    description: 'Complete the payment in the new tab.',
+                });
+                
+                // Navigate back to the return URL
+                setTimeout(() => {
+                    navigate(returnUrl);
+                }, 1500);
             }
         } catch (error: any) {
             toast({

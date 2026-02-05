@@ -211,6 +211,25 @@ class FinternetService:
         response.raise_for_status()
         return response.json()
 
+    def get_payment_url(self, intent_response: Dict[str, Any]) -> str:
+        """Extract payment URL from intent response."""
+        intent_data = intent_response.get("data", intent_response)
+        intent_id = intent_data.get("id") or intent_response.get("id")
+        
+        # Try various fields where URL might be
+        payment_url = (
+            intent_data.get("paymentUrl") or
+            intent_data.get("payment_url") or
+            intent_response.get("paymentUrl") or
+            intent_response.get("payment_url")
+        )
+        
+        # Fallback: construct URL with intent ID
+        if not payment_url and intent_id:
+            payment_url = f"https://pay.fmm.finternetlab.io/?intent={intent_id}"
+        
+        return payment_url or ""
+
 
 # Split payment calculation utility
 def calculate_split(total_amount: float, num_participants: int, weights: Optional[Dict[str, float]] = None) -> Dict[str, Any]:

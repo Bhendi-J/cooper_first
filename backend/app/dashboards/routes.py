@@ -3,7 +3,7 @@ from flask_jwt_extended import jwt_required, get_jwt_identity
 from bson import ObjectId
 from app.extensions import db as mongo
 
-bp = Blueprint("dashboards", __name__, url_prefix="/dashboards")
+bp = Blueprint("dashboards", __name__)
 
 
 @bp.route("/summary/<user_id>", methods=["GET"])
@@ -60,7 +60,7 @@ def recent_activity():
         # Project final fields
         {"$project": {
             "_id": {"$toString": "$_id"},
-            "type": "$type",
+            "type": {"$trim": {"input": "$type"}},
             "description": "$description",
             "amount": "$amount",
             "event_id": {"$toString": "$event_id"},
@@ -73,9 +73,12 @@ def recent_activity():
     
     activities = list(mongo.activities.aggregate(pipeline))
     
-    # Convert datetime to ISO string for JSON serialization
+    # Convert datetime to ISO string for JSON serialization and normalize type
     for activity in activities:
         if activity.get("created_at"):
             activity["created_at"] = activity["created_at"].isoformat()
+        # Normalize type field (strip whitespace/newlines)
+        if activity.get("type"):
+            activity["type"] = activity["type"].strip()
     
     return jsonify({"activities": activities})

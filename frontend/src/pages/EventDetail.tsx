@@ -108,18 +108,35 @@ export default function EventDetail() {
     }
   };
 
-  const handleDeposit = () => {
+  const handleDeposit = async () => {
     if (!depositAmount || !id) return;
 
-    // Store necessary details for the callback
-    localStorage.setItem('pending_deposit_event_id', id);
-    localStorage.setItem('pending_deposit_amount', depositAmount);
-
-    // Redirect to payment page
-    navigate(`/payment?amount=${depositAmount}&description=Deposit for ${event?.name || 'Event'}&returnUrl=/payment/callback`);
-
-    setShowDepositModal(false);
-    setDepositAmount('');
+    setIsDepositing(true);
+    
+    try {
+      // Use Finternet gateway for deposit
+      const response = await eventsAPI.depositWithFinternet(id, parseFloat(depositAmount));
+      
+      // Store info for callback
+      localStorage.setItem('finternet_intent_id', response.data.intent_id);
+      localStorage.setItem('finternet_return_url', `/events/${id}`);
+      localStorage.setItem('pending_deposit_event_id', id);
+      localStorage.setItem('pending_deposit_amount', depositAmount);
+      
+      // Redirect to payment gateway
+      window.location.href = response.data.payment_url;
+      
+    } catch (error: any) {
+      console.error('Deposit error:', error);
+      toast({
+        title: 'Deposit failed',
+        description: error.response?.data?.error || error.message || 'Failed to process deposit. Please try again.',
+        variant: 'destructive',
+      });
+      setIsDepositing(false);
+      setShowDepositModal(false);
+      setDepositAmount('');
+    }
   };
 
   if (isLoading) {

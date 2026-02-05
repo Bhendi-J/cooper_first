@@ -9,10 +9,12 @@ import {
   usersAPI, 
   dashboardsAPI, 
   analyticsAPI,
+  settlementsAPI,
   Event, 
   UserSummary, 
   RecentActivity, 
-  AnalyticsOverview 
+  AnalyticsOverview,
+  Notification
 } from '@/lib/api';
 import { useToast } from '@/hooks/use-toast';
 import {
@@ -76,6 +78,9 @@ export default function Dashboard() {
   const [summary, setSummary] = useState<UserSummary | null>(null);
   const [recentActivity, setRecentActivity] = useState<RecentActivity[]>([]);
   const [analytics, setAnalytics] = useState<AnalyticsOverview | null>(null);
+  const [notifications, setNotifications] = useState<Notification[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [showNotifications, setShowNotifications] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
 
   // Fetch user's events on mount
@@ -83,16 +88,19 @@ export default function Dashboard() {
     const fetchData = async () => {
       try {
         setIsLoading(true);
-        const [eventsRes, summaryRes, activityRes, analyticsRes] = await Promise.all([
+        const [eventsRes, summaryRes, activityRes, analyticsRes, notifRes] = await Promise.all([
           eventsAPI.list(),
           usersAPI.getSummary(),
           dashboardsAPI.getRecentActivity(5),
           analyticsAPI.getOverview(),
+          settlementsAPI.getNotifications(false, 10).catch(() => ({ data: { notifications: [], unread_count: 0 } })),
         ]);
         setEvents(eventsRes.data.events || []);
         setSummary(summaryRes.data);
         setRecentActivity(activityRes.data.activities || []);
         setAnalytics(analyticsRes.data);
+        setNotifications(notifRes.data.notifications || []);
+        setUnreadCount(notifRes.data.unread_count || 0);
       } catch (error: any) {
         console.error('Failed to fetch dashboard data:', error);
         // If token is invalid, the interceptor will redirect to login
@@ -109,6 +117,26 @@ export default function Dashboard() {
     };
     fetchData();
   }, [toast]);
+
+  const handleMarkNotificationRead = async (notifId: string) => {
+    try {
+      await settlementsAPI.markNotificationRead(notifId);
+      setNotifications(prev => prev.map(n => n._id === notifId ? { ...n, read: true } : n));
+      setUnreadCount(prev => Math.max(0, prev - 1));
+    } catch (error) {
+      console.error('Failed to mark notification read:', error);
+    }
+  };
+
+  const handleMarkAllRead = async () => {
+    try {
+      await settlementsAPI.markAllNotificationsRead();
+      setNotifications(prev => prev.map(n => ({ ...n, read: true })));
+      setUnreadCount(0);
+    } catch (error) {
+      console.error('Failed to mark all notifications read:', error);
+    }
+  };
 
   const handleLogout = () => {
     logout();
@@ -157,10 +185,71 @@ export default function Dashboard() {
           </Link>
 
           <div className="flex items-center gap-4">
-            <Button variant="ghost" size="icon" className="relative">
-              <Bell className="w-5 h-5" />
-              <span className="absolute top-1 right-1 w-2 h-2 bg-destructive rounded-full" />
-            </Button>
+            <div className="relative">
+              <Button 
+                variant="ghost" 
+                size="icon" 
+                className="relative"
+                onClick={() => setShowNotifications(!showNotifications)}
+              >
+                <Bell className="w-5 h-5" />
+                {unreadCount > 0 && (
+                  <span className="absolute -top-1 -right-1 min-w-[18px] h-[18px] flex items-center justify-center bg-destructive text-destructive-foreground text-xs font-bold rounded-full px-1">
+                    {unreadCount > 9 ? '9+' : unreadCount}
+                  </span>
+                )}
+              </Button>
+
+              {showNotifications && (
+                <motion.div
+                  initial={{ opacity: 0, y: 10 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="absolute right-0 mt-2 w-80 glass-card rounded-xl py-2 shadow-xl z-50 max-h-96 overflow-y-auto"
+                >
+                  <div className="flex items-center justify-between px-4 py-2 border-b border-border">
+                    <h3 className="font-semibold">Notifications</h3>
+                    {unreadCount > 0 && (
+                      <button 
+                        onClick={handleMarkAllRead}
+                        className="text-xs text-primary hover:underline"
+                      >
+                        Mark all read
+                      </button>
+                    )}
+                  </div>
+                  {notifications.length === 0 ? (
+                    <div className="px-4 py-6 text-center text-muted-foreground">
+                      No notifications yet
+                    </div>
+                  ) : (
+                    <div className="divide-y divide-border">
+                      {notifications.map((notif) => (
+                        <button
+                          key={notif._id}
+                          onClick={() => handleMarkNotificationRead(notif._id)}
+                          className={`w-full px-4 py-3 text-left hover:bg-accent transition-colors ${
+                            !notif.read ? 'bg-primary/5' : ''
+                          }`}
+                        >
+                          <div className="flex items-start gap-2">
+                            {!notif.read && (
+                              <span className="w-2 h-2 bg-primary rounded-full mt-1.5 flex-shrink-0" />
+                            )}
+                            <div className={!notif.read ? '' : 'pl-4'}>
+                              <p className="font-medium text-sm">{notif.title}</p>
+                              <p className="text-xs text-muted-foreground line-clamp-2">{notif.message}</p>
+                              <p className="text-xs text-muted-foreground mt-1">
+                                {dayjs(notif.created_at).fromNow()}
+                              </p>
+                            </div>
+                          </div>
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                </motion.div>
+              )}
+            </div>
 
             <div className="relative">
               <button

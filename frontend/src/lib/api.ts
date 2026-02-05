@@ -84,13 +84,14 @@ export interface Expense {
   amount: number;
   description: string;
   category_id?: string;
-  split_type: 'equal' | 'custom';
+  split_type: 'equal' | 'weighted' | 'percentage' | 'exact' | 'custom';
   splits: Array<{
     user_id: string;
     amount: number;
     status: 'paid' | 'pending';
   }>;
-  status: 'pending' | 'verified';
+  status: 'pending' | 'pending_approval' | 'approved' | 'rejected' | 'cancelled' | 'verified';
+  approval_status?: 'pending' | 'approved' | 'rejected';
   merkle_proof?: string[];
   created_at: string;
 }
@@ -99,6 +100,95 @@ export interface Category {
   _id: string;
   name: string;
   icon?: string;
+}
+
+// =====================
+// NOTIFICATIONS TYPES
+// =====================
+export interface Notification {
+  _id: string;
+  user_id: string;
+  type: string;
+  title: string;
+  message: string;
+  data?: Record<string, any>;
+  priority: 'low' | 'normal' | 'high' | 'urgent';
+  read: boolean;
+  created_at: string;
+  read_at?: string;
+}
+
+// =====================
+// DEBT TYPES
+// =====================
+export interface UserDebt {
+  _id: string;
+  user_id: string;
+  event_id: string;
+  expense_id?: string;
+  amount: number;
+  remaining_amount: number;
+  status: 'outstanding' | 'partially_paid' | 'settled' | 'forgiven';
+  created_at: string;
+  days_overdue?: number;
+}
+
+export interface DebtRestrictions {
+  has_restrictions: boolean;
+  warning: boolean;
+  restricted: boolean;
+  critical: boolean;
+  oldest_debt_days?: number;
+  total_outstanding?: number;
+}
+
+// =====================
+// RELIABILITY TYPES
+// =====================
+export interface ReliabilityScore {
+  score: number;
+  tier: 'excellent' | 'good' | 'fair' | 'poor' | 'restricted';
+  factors: {
+    shortfall_count?: number;
+    late_settlements?: number;
+    debt_age_days?: number;
+  };
+  restrictions: {
+    expense_multiplier?: number;
+    deposit_multiplier?: number;
+    force_approval?: boolean;
+    can_join_events?: boolean;
+  };
+}
+
+// =====================
+// JOIN REQUEST TYPES
+// =====================
+export interface JoinRequest {
+  _id: string;
+  event_id: string;
+  user_id: string;
+  user_name?: string;
+  user_email?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  join_method: string;
+  created_at: string;
+}
+
+// =====================
+// APPROVAL TYPES
+// =====================
+export interface PendingApproval {
+  _id: string;
+  expense_id: string;
+  event_id: string;
+  user_id: string;
+  user_name?: string;
+  amount: number;
+  description?: string;
+  status: 'pending' | 'approved' | 'rejected';
+  reason?: string;
+  created_at: string;
 }
 
 // =====================
@@ -149,9 +239,25 @@ export const eventsAPI = {
 
   // Join an event using invite code
   joinByCode: (code: string) =>
-    api.post<{ message: string; event_id: string; event_name: string }>(
-      `/events/join/${code}`
-    ),
+    api.post<{ 
+      message: string; 
+      event_id?: string; 
+      event_name?: string;
+      status?: 'pending' | 'approved';
+      request_id?: string;
+    }>(`/events/join/${code}`),
+
+  // Get pending join requests for an event (creator only)
+  getJoinRequests: (eventId: string) =>
+    api.get<{ requests: JoinRequest[] }>(`/events/${eventId}/join-requests`),
+
+  // Approve a join request (creator only)
+  approveJoinRequest: (eventId: string, requestId: string) =>
+    api.post<{ message: string; status: string }>(`/events/${eventId}/join-requests/${requestId}/approve`),
+
+  // Reject a join request (creator only)
+  rejectJoinRequest: (eventId: string, requestId: string, reason?: string) =>
+    api.post<{ message: string; status: string }>(`/events/${eventId}/join-requests/${requestId}/reject`, { reason }),
 
   // Deposit money to an event (direct mode)
   deposit: (id: string, amount: number) =>
@@ -196,15 +302,49 @@ export interface CreateExpenseData {
   amount: number;
   description?: string;
   category_id?: string;
+  split_type?: 'equal' | 'weighted' | 'percentage' | 'exact';
+  split_details?: {
+    weights?: Record<string, number>;
+    percentages?: Record<string, number>;
+    amounts?: Record<string, number>;
+  };
+  selected_members?: string[];  // For custom splits: only these members are included
+}
+
+export interface AddExpenseResponse {
+  expense: Expense;
+  merkle_root?: string;
+  status?: 'pending_approval' | 'approved';
+  message?: string;
+  shortfall_debts?: Array<{
+    user_id: string;
+    amount: number;
+    debt_id: string;
+  }>;
 }
 
 export const expensesAPI = {
   // Add a new expense
   add: (data: CreateExpenseData) =>
-    api.post<{ expense: Expense; merkle_root: string; payment_intents: Array<{ user_id: string; intent: any }> }>(
-      '/expenses/',
-      data
-    ),
+    api.post<AddExpenseResponse>('/expenses/', data),
+
+  // Add expense with payment gateway
+  addWithPayment: (data: CreateExpenseData) =>
+    api.post<{
+      pending_expense_id: string;
+      payment_intent_id: string;
+      payment_url: string;
+      amount: number;
+      message: string;
+    }>('/expenses/pay', data),
+
+  // Confirm expense payment
+  confirmPayment: (pendingId: string) =>
+    api.post<{
+      message: string;
+      expense_id: string;
+      amount: number;
+    }>(`/expenses/pay/${pendingId}/confirm`),
 
   // Get all expenses for an event
   getByEvent: (eventId: string) =>
@@ -219,6 +359,26 @@ export const expensesAPI = {
 
   // Get expense categories
   getCategories: () => api.get<{ categories: Category[] }>('/expenses/categories'),
+
+  // Get pending approvals for an event (creator only)
+  getPendingApprovals: (eventId: string) =>
+    api.get<{ pending_approvals: PendingApproval[] }>(`/expenses/pending-approvals/${eventId}`),
+
+  // Approve an expense (creator only)
+  approve: (expenseId: string) =>
+    api.post<{ 
+      message: string; 
+      expense_id: string;
+      shortfall_debts?: Array<{ user_id: string; amount: number; debt_id: string }>;
+    }>(`/expenses/${expenseId}/approve`),
+
+  // Reject an expense (creator only)
+  reject: (expenseId: string, reason?: string) =>
+    api.post<{ message: string; expense_id: string }>(`/expenses/${expenseId}/reject`, { reason }),
+
+  // Cancel a pending expense (expense creator only)
+  cancel: (expenseId: string) =>
+    api.post<{ message: string; expense_id: string }>(`/expenses/${expenseId}/cancel`),
 };
 
 // =====================
@@ -292,14 +452,54 @@ export const analyticsAPI = {
 // =====================
 // WALLETS API
 // =====================
+export interface WalletTransaction {
+  _id: string;
+  wallet_id: string;
+  user_id: string;
+  type: 'credit' | 'debit';
+  amount: number;
+  source?: string;
+  purpose?: string;
+  reference_id?: string;
+  notes?: string;
+  balance_after: number;
+  created_at: string;
+}
+
 export const walletsAPI = {
-  // Get wallet balance for a user
-  getBalance: (userId: string) =>
+  // Get current user's wallet balance
+  getBalance: () =>
+    api.get<{ user_id: string; balance: number }>('/wallets/balance'),
+
+  // Get wallet balance for a specific user
+  getUserBalance: (userId: string) =>
     api.get<{ user_id: string; balance: number }>(`/wallets/balance/${userId}`),
 
-  // Deposit to wallet
-  deposit: (data: { amount: number; user_id?: string }) =>
-    api.post<{ status: string; data: any }>('/wallets/deposit', data),
+  // Deposit to wallet (top-up)
+  deposit: (amount: number) =>
+    api.post<{ status: string; message: string; new_balance: number }>('/wallets/deposit', { amount }),
+
+  // Withdraw from wallet
+  withdraw: (amount: number) =>
+    api.post<{ status: string; message: string; amount_withdrawn: number; new_balance: number }>('/wallets/withdraw', { amount }),
+
+  // Get wallet transaction history
+  getTransactions: (page = 1, perPage = 20) =>
+    api.get<{ 
+      transactions: WalletTransaction[]; 
+      page: number; 
+      per_page: number; 
+      total: number; 
+      pages: number 
+    }>(`/wallets/transactions?page=${page}&per_page=${perPage}`),
+
+  // Transfer to another user
+  transfer: (toUserId: string, amount: number, notes?: string) =>
+    api.post<{ status: string; message: string; new_balance: number }>('/wallets/transfer', {
+      to_user_id: toUserId,
+      amount,
+      notes,
+    }),
 };
 
 // =====================
@@ -376,7 +576,10 @@ export const settlementsAPI = {
 
   // Record a settlement payment
   settle: (data: { event_id: string; from_user_id: string; to_user_id: string; amount: number; payment_method?: string }) =>
-    api.post<{ settlement: Settlement }>('/settlements/settle', data),
+    api.post<{ 
+      settlement: Settlement;
+      debts_settled?: Array<{ debt_id: string; amount_settled: number; status: string }>;
+    }>('/settlements/settle', data),
 
   // Get settlement history for an event
   getHistory: (eventId: string) =>
@@ -425,6 +628,90 @@ export const settlementsAPI = {
   // Get user's refund history
   getRefunds: () =>
     api.get<{ refunds: Refund[] }>('/settlements/refunds'),
+
+  // ==================== DEBT ENDPOINTS ====================
+  
+  // Get current user's outstanding debts
+  getMyDebts: () =>
+    api.get<{ debts: UserDebt[]; restrictions: DebtRestrictions }>('/settlements/debts/my'),
+
+  // Settle a specific debt (creates payment intent)
+  settleDebt: (debtId: string, amount?: number) =>
+    api.post<{
+      id: string;
+      status: string;
+      paymentUrl: string;
+      amount: number;
+      debt_id: string;
+    }>(`/settlements/debts/${debtId}/settle`, amount ? { amount } : {}),
+
+  // Forgive a debt (creator only)
+  forgiveDebt: (debtId: string, reason?: string) =>
+    api.post<{ message: string; debt_id: string }>(`/settlements/debts/${debtId}/forgive`, { reason }),
+
+  // ==================== NOTIFICATION ENDPOINTS ====================
+
+  // Get notifications for current user
+  getNotifications: (unreadOnly = false, limit = 50) =>
+    api.get<{ notifications: Notification[]; unread_count: number }>(
+      `/settlements/notifications?unread_only=${unreadOnly}&limit=${limit}`
+    ),
+
+  // Mark a notification as read
+  markNotificationRead: (notificationId: string) =>
+    api.post<{ success: boolean }>(`/settlements/notifications/${notificationId}/read`),
+
+  // Mark all notifications as read
+  markAllNotificationsRead: () =>
+    api.post<{ marked_read: number }>('/settlements/notifications/read-all'),
+
+  // ==================== RELIABILITY ENDPOINTS ====================
+
+  // Get reliability score for current user
+  getReliabilityScore: () =>
+    api.get<ReliabilityScore>('/settlements/reliability/score'),
+};
+
+// =====================
+// NOTIFICATIONS API (Standalone)
+// =====================
+export const notificationsAPI = {
+  // Get notifications with pagination
+  getAll: (page = 1, perPage = 20, unreadOnly = false) =>
+    api.get<{ 
+      notifications: Notification[]; 
+      page: number; 
+      per_page: number; 
+      total: number; 
+      pages: number;
+      unread_count: number 
+    }>(`/notifications?page=${page}&per_page=${perPage}&unread_only=${unreadOnly}`),
+
+  // Get unread count only
+  getUnreadCount: () =>
+    api.get<{ unread_count: number }>('/notifications/unread-count'),
+
+  // Mark as read
+  markAsRead: (notificationId: string) =>
+    api.post<{ status: string; message: string }>(`/notifications/${notificationId}/read`),
+
+  // Mark all as read
+  markAllAsRead: () =>
+    api.post<{ status: string; message: string }>('/notifications/read-all'),
+
+  // Delete a notification
+  delete: (notificationId: string) =>
+    api.delete<{ status: string; message: string }>(`/notifications/${notificationId}`),
+
+  // Clear all notifications
+  clearAll: () =>
+    api.delete<{ status: string; message: string }>('/notifications/clear'),
+
+  // Poll for new notifications (for real-time without WebSocket)
+  poll: (since?: string) =>
+    api.get<{ notifications: Notification[]; timestamp: string }>(
+      `/notifications/poll${since ? `?since=${since}` : ''}`
+    ),
 };
 
 // =====================
@@ -618,4 +905,36 @@ export const paymentsAPI = {
       signature,
       payer_address: payerAddress,
     }),
+
+  // ==================== NEW PAYMENT ENDPOINTS ====================
+
+  // Create a deposit intent for an event
+  createDepositIntent: (eventId: string, amount: number) =>
+    api.post<{
+      id: string;
+      status: string;
+      paymentUrl: string;
+      amount: number;
+      currency: string;
+    }>('/payments/deposit', { event_id: eventId, amount }),
+
+  // Create a wallet top-up intent
+  createTopupIntent: (amount: number) =>
+    api.post<{
+      id: string;
+      status: string;
+      paymentUrl: string;
+      amount: number;
+      currency: string;
+    }>('/payments/topup', { amount }),
+
+  // Create a debt settlement intent
+  createDebtSettlementIntent: (debtId?: string, amount?: number) =>
+    api.post<{
+      id: string;
+      status: string;
+      paymentUrl: string;
+      amount: number;
+      currency: string;
+    }>('/payments/debts/settle', { debt_id: debtId, amount }),
 };

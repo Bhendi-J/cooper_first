@@ -40,9 +40,14 @@ export default function EventCreate() {
     description: '',
     startDate: '',
     endDate: '',
-    initialDeposit: '',
+    // Deposit rules
+    minDeposit: '',
+    maxDeposit: '',
+    // Expense rules
     maxExpense: '',
+    minExpense: '',
     approvalThreshold: '',
+    requireApproval: false,
   });
 
   const [createdEvent, setCreatedEvent] = useState<{
@@ -66,9 +71,16 @@ export default function EventCreate() {
         start_date: formData.startDate || undefined,
         end_date: formData.endDate || undefined,
         rules: {
-          spending_limit: formData.maxExpense ? parseFloat(formData.maxExpense) : undefined,
-          approval_required: !!formData.approvalThreshold,
-          auto_approve_under: formData.approvalThreshold ? parseFloat(formData.approvalThreshold) : undefined,
+          // Deposit limits
+          min_deposit: formData.minDeposit ? parseFloat(formData.minDeposit) : undefined,
+          max_deposit: formData.maxDeposit ? parseFloat(formData.maxDeposit) : undefined,
+          // Expense limits
+          max_expense_per_transaction: formData.maxExpense ? parseFloat(formData.maxExpense) : undefined,
+          min_expense_per_transaction: formData.minExpense ? parseFloat(formData.minExpense) : undefined,
+          // Approval settings
+          approval_required: formData.requireApproval,
+          approval_required_threshold: formData.approvalThreshold ? parseFloat(formData.approvalThreshold) : undefined,
+          auto_approve_under: formData.approvalThreshold ? parseFloat(formData.approvalThreshold) : 100,
         },
       });
 
@@ -240,23 +252,54 @@ export default function EventCreate() {
                 </div>
               </div>
 
-              <div className="space-y-2">
-                <Label htmlFor="initialDeposit">Initial Deposit per Person</Label>
-                <div className="relative">
-                  <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                  <Input
-                    id="initialDeposit"
-                    name="initialDeposit"
-                    type="number"
-                    placeholder="5000"
-                    value={formData.initialDeposit}
-                    onChange={handleInputChange}
-                    className="h-12 pl-11 bg-background-surface border-border focus:border-primary"
-                    required
-                  />
+              <div className="glass-card p-6 rounded-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-lg bg-success/10 flex items-center justify-center">
+                    <IndianRupee className="w-5 h-5 text-success" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold">Deposit Limits</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Set min/max deposit amounts for members
+                    </p>
+                  </div>
                 </div>
-                <p className="text-xs text-muted-foreground">
-                  Each member will deposit this amount to join the event
+
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label htmlFor="minDeposit">Minimum Deposit</Label>
+                    <div className="relative">
+                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                      <Input
+                        id="minDeposit"
+                        name="minDeposit"
+                        type="number"
+                        placeholder="500"
+                        value={formData.minDeposit}
+                        onChange={handleInputChange}
+                        className="h-12 pl-11 bg-background-surface border-border focus:border-primary"
+                      />
+                    </div>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="maxDeposit">Maximum Deposit</Label>
+                    <div className="relative">
+                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                      <Input
+                        id="maxDeposit"
+                        name="maxDeposit"
+                        type="number"
+                        placeholder="50000"
+                        value={formData.maxDeposit}
+                        onChange={handleInputChange}
+                        className="h-12 pl-11 bg-background-surface border-border focus:border-primary"
+                      />
+                    </div>
+                  </div>
+                </div>
+                <p className="text-xs text-muted-foreground mt-2">
+                  Members can deposit any amount within this range
                 </p>
               </div>
 
@@ -288,14 +331,33 @@ export default function EventCreate() {
                   <div>
                     <h3 className="font-semibold">Spending Limits</h3>
                     <p className="text-sm text-muted-foreground">
-                      Set maximum amounts for transactions
+                      Set limits for individual transactions
                     </p>
                   </div>
                 </div>
 
-                <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-4">
                   <div className="space-y-2">
-                    <Label htmlFor="maxExpense">Maximum Single Expense</Label>
+                    <Label htmlFor="minExpense">Minimum Expense</Label>
+                    <div className="relative">
+                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                      <Input
+                        id="minExpense"
+                        name="minExpense"
+                        type="number"
+                        placeholder="10"
+                        value={formData.minExpense}
+                        onChange={handleInputChange}
+                        className="h-12 pl-11 bg-background border-border focus:border-primary"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      Minimum amount per expense
+                    </p>
+                  </div>
+
+                  <div className="space-y-2">
+                    <Label htmlFor="maxExpense">Maximum Expense</Label>
                     <div className="relative">
                       <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
                       <Input
@@ -308,26 +370,67 @@ export default function EventCreate() {
                         className="h-12 pl-11 bg-background border-border focus:border-primary"
                       />
                     </div>
-                  </div>
-
-                  <div className="space-y-2">
-                    <Label htmlFor="approvalThreshold">Require Approval Above</Label>
-                    <div className="relative">
-                      <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
-                      <Input
-                        id="approvalThreshold"
-                        name="approvalThreshold"
-                        type="number"
-                        placeholder="10000"
-                        value={formData.approvalThreshold}
-                        onChange={handleInputChange}
-                        className="h-12 pl-11 bg-background border-border focus:border-primary"
-                      />
-                    </div>
                     <p className="text-xs text-muted-foreground">
-                      Expenses above this amount need group approval
+                      Maximum amount per expense
                     </p>
                   </div>
+                </div>
+              </div>
+
+              <div className="glass-card p-6 rounded-xl">
+                <div className="flex items-center gap-3 mb-4">
+                  <div className="w-10 h-10 rounded-lg bg-primary/10 flex items-center justify-center">
+                    <Check className="w-5 h-5 text-primary" />
+                  </div>
+                  <div>
+                    <h3 className="font-semibold">Approval Settings</h3>
+                    <p className="text-sm text-muted-foreground">
+                      Control when expenses need approval
+                    </p>
+                  </div>
+                </div>
+
+                <div className="space-y-4">
+                  <div className="flex items-center justify-between p-4 bg-background rounded-lg">
+                    <div>
+                      <p className="font-medium">Require approval for all expenses</p>
+                      <p className="text-sm text-muted-foreground">All expenses must be approved by you</p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setFormData({ ...formData, requireApproval: !formData.requireApproval })}
+                      className={`w-12 h-6 rounded-full transition-colors ${
+                        formData.requireApproval ? 'bg-primary' : 'bg-muted'
+                      }`}
+                    >
+                      <div
+                        className={`w-5 h-5 bg-white rounded-full transition-transform ${
+                          formData.requireApproval ? 'translate-x-6' : 'translate-x-0.5'
+                        }`}
+                      />
+                    </button>
+                  </div>
+
+                  {!formData.requireApproval && (
+                    <div className="space-y-2">
+                      <Label htmlFor="approvalThreshold">Auto-approve expenses under</Label>
+                      <div className="relative">
+                        <IndianRupee className="absolute left-3 top-1/2 -translate-y-1/2 w-5 h-5 text-muted-foreground" />
+                        <Input
+                          id="approvalThreshold"
+                          name="approvalThreshold"
+                          type="number"
+                          placeholder="100"
+                          value={formData.approvalThreshold}
+                          onChange={handleInputChange}
+                          className="h-12 pl-11 bg-background border-border focus:border-primary"
+                        />
+                      </div>
+                      <p className="text-xs text-muted-foreground">
+                        Expenses above this amount need your approval
+                      </p>
+                    </div>
+                  )}
                 </div>
               </div>
 

@@ -21,6 +21,20 @@ interface CreatePaymentIntentRequest {
   description?: string;
 }
 
+interface DepositIntentRequest {
+  event_id: string;
+  amount: number;
+}
+
+interface TopupIntentRequest {
+  amount: number;
+}
+
+interface DebtSettlementRequest {
+  debt_id?: string;
+  amount?: number;
+}
+
 /**
  * Get auth headers with JWT token
  */
@@ -63,6 +77,37 @@ export async function getPaymentStatus(intentId: string): Promise<PaymentIntent>
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error || 'Failed to get payment status');
+  }
+
+  return response.json();
+}
+
+/**
+ * Payment tracking status from our internal records
+ */
+export interface PaymentTrackingStatus {
+  intent_id: string;
+  status: 'initiated' | 'processing' | 'confirmed' | 'failed' | 'cancelled';
+  amount: number;
+  purpose: string;
+  event_id?: string;
+  transaction_hash?: string;
+  created_at?: string;
+  confirmed_at?: string;
+}
+
+/**
+ * Get payment tracking status from our internal records.
+ * This is used to check if the webhook has confirmed the payment.
+ */
+export async function getPaymentTrackingStatus(intentId: string): Promise<PaymentTrackingStatus> {
+  const response = await fetch(`${API_BASE}/status/${intentId}`, {
+    headers: getAuthHeaders(),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to get payment tracking status');
   }
 
   return response.json();
@@ -147,6 +192,66 @@ export async function calculateSplit(
   if (!response.ok) {
     const error = await response.json();
     throw new Error(error.error || 'Failed to calculate split');
+  }
+
+  return response.json();
+}
+
+/**
+ * Create a deposit intent for an event
+ */
+export async function createDepositIntent(
+  request: DepositIntentRequest
+): Promise<PaymentIntent> {
+  const response = await fetch(`${API_BASE}/deposit`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to create deposit intent');
+  }
+
+  return response.json();
+}
+
+/**
+ * Create a wallet top-up intent
+ */
+export async function createTopupIntent(
+  request: TopupIntentRequest
+): Promise<PaymentIntent> {
+  const response = await fetch(`${API_BASE}/topup`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to create top-up intent');
+  }
+
+  return response.json();
+}
+
+/**
+ * Create a debt settlement intent
+ */
+export async function createDebtSettlementIntent(
+  request: DebtSettlementRequest
+): Promise<PaymentIntent> {
+  const response = await fetch(`${API_BASE}/debts/settle`, {
+    method: 'POST',
+    headers: getAuthHeaders(),
+    body: JSON.stringify(request),
+  });
+
+  if (!response.ok) {
+    const error = await response.json();
+    throw new Error(error.error || 'Failed to create debt settlement intent');
   }
 
   return response.json();
