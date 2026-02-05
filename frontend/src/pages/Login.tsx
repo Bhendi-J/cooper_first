@@ -51,7 +51,7 @@ export default function Login() {
       { id: 'demo-user', name: 'Demo User', email: 'demo@cooper.app' },
       'demo-token'
     );
-  navigate('/dashboard');
+    navigate('/dashboard');
   };
 
   return (
@@ -158,6 +158,12 @@ export default function Login() {
               Sign up
             </Link>
           </p>
+
+          <div className="mt-8 p-3 rounded-lg border border-border/50 bg-background-surface/50 text-[10px] font-mono text-muted-foreground break-all">
+            <p className="font-bold mb-1 uppercase tracking-wider opacity-50">Connection Debug</p>
+            <p>API: {import.meta.env.VITE_API_URL || `http://${window.location.hostname}:5000/api/v1`}</p>
+            <p>App Host: {window.location.host}</p>
+          </div>
         </motion.div>
       </div>
 
@@ -166,7 +172,7 @@ export default function Login() {
         <div className="absolute inset-0 bg-grid opacity-20" />
         <div className="absolute top-1/4 right-1/4 w-72 h-72 bg-primary/20 rounded-full blur-[100px]" />
         <div className="absolute bottom-1/4 left-1/4 w-72 h-72 bg-secondary/20 rounded-full blur-[100px]" />
-        
+
         <motion.div
           initial={{ opacity: 0, scale: 0.9 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -182,7 +188,7 @@ export default function Login() {
               <p className="text-3xl font-bold">₹2,45,000</p>
             </div>
           </div>
-          
+
           <div className="grid grid-cols-2 gap-4">
             <div className="bg-background-surface p-4 rounded-xl">
               <p className="text-2xl font-bold text-success">12</p>
@@ -193,7 +199,7 @@ export default function Login() {
               <p className="text-sm text-muted-foreground">Team Members</p>
             </div>
           </div>
-          
+
           <div className="mt-6 pt-6 border-t border-border">
             <p className="text-sm text-muted-foreground mb-3">Trusted by groups across India</p>
             <div className="flex -space-x-2">
