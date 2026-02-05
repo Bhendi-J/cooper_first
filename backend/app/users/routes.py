@@ -1,7 +1,8 @@
-from flask import Blueprint, jsonify
+from flask import Blueprint, jsonify, request
 from flask_jwt_extended import jwt_required, get_jwt_identity
 from bson import ObjectId
 from app.extensions import db as mongo
+import re
 
 users_bp = Blueprint("users", __name__)
 
@@ -63,3 +64,38 @@ def summary():
         "total_deposits": round(total_deposits, 2),
         "net_position": net_position
     })
+
+
+@users_bp.route("/search", methods=["GET"])
+@jwt_required()
+def search_users():
+    """Search for users by email or name."""
+    query = request.args.get("q", "").strip()
+    current_user_id = get_jwt_identity()
+    
+    if not query:
+        return jsonify({"users": []})
+    
+    if len(query) < 2:
+        return jsonify({"users": []})
+    
+    # Create regex for case-insensitive search
+    regex_pattern = re.compile(re.escape(query), re.IGNORECASE)
+    
+    # Search by email or name, excluding current user
+    users = list(mongo.users.find(
+        {
+            "_id": {"$ne": ObjectId(current_user_id)},
+            "$or": [
+                {"email": regex_pattern},
+                {"name": regex_pattern}
+            ]
+        },
+        {"_id": 1, "name": 1, "email": 1}
+    ).limit(10))
+    
+    # Format response
+    for user in users:
+        user["_id"] = str(user["_id"])
+    
+    return jsonify({"users": users})

@@ -273,13 +273,23 @@ def leave_event(event_id):
             }
         )
         
+        # Credit the user's personal wallet
+        from app.core import WalletFallbackService
+        WalletFallbackService.credit_wallet(
+            user_id=str(user_id),
+            amount=user_balance,
+            source="event_withdrawal",
+            reference_id=str(event_oid),
+            notes=f"Left event '{event.get('name', 'Unknown')}' and withdrew balance"
+        )
+        
         # Record withdrawal activity
         mongo.activities.insert_one({
             "type": "participant_left",
             "event_id": event_oid,
             "user_id": user_id,
             "amount": user_balance,
-            "description": f"Left event and withdrew ${user_balance:.2f}",
+            "description": f"Left event and withdrew ${user_balance:.2f} to wallet",
             "created_at": datetime.utcnow()
         })
     
@@ -354,18 +364,35 @@ def delete_event(event_id):
     participants = list(mongo.participants.find({"event_id": event_oid}))
     event_name = event.get("name", "Unknown Event")
     
-    # Notify all participants (except creator) about deletion
+    # Import wallet service for crediting balances
+    from app.core import WalletFallbackService
+    
+    # Notify all participants (except creator) about deletion and credit their wallets
     for participant in participants:
+        balance = round(float(participant.get("balance", 0)), 2)
+        
+        # Credit positive balance to user's personal wallet
+        if balance > 0:
+            WalletFallbackService.credit_wallet(
+                user_id=str(participant["user_id"]),
+                amount=balance,
+                source="event_deleted",
+                reference_id=str(event_oid),
+                notes=f"Event '{event_name}' deleted - balance returned"
+            )
+        
         if participant["user_id"] != user_id:
             NotificationService.create_notification(
                 user_id=str(participant["user_id"]),
                 notification_type="event_deleted",
                 title="Event Deleted",
-                message=f"The event '{event_name}' has been deleted by the creator.",
+                message=f"The event '{event_name}' has been deleted by the creator." +
+                        (f" Your balance of ${balance:.2f} has been credited to your wallet." if balance > 0 else ""),
                 data={
                     "event_id": str(event_oid),
                     "event_name": event_name,
-                    "balance_returned": participant.get("balance", 0)
+                    "balance_returned": balance,
+                    "balance_credited_to_wallet": balance > 0
                 }
             )
     
@@ -417,7 +444,10 @@ def end_event(event_id):
     participants = list(mongo.participants.find({"event_id": event_oid}))
     event_name = event.get("name", "Unknown Event")
     
-    # Calculate settlement for each participant
+    # Import wallet service for crediting balances
+    from app.core import WalletFallbackService
+    
+    # Calculate settlement for each participant and credit their wallet
     settlements = []
     for participant in participants:
         user = mongo.users.find_one({"_id": participant["user_id"]})
@@ -425,6 +455,16 @@ def end_event(event_id):
         balance = round(float(participant.get("balance", 0)), 2)
         deposit = round(float(participant.get("deposit_amount", 0)), 2)
         spent = round(float(participant.get("total_spent", 0)), 2)
+        
+        # Credit positive balance to user's personal wallet
+        if balance > 0:
+            WalletFallbackService.credit_wallet(
+                user_id=str(participant["user_id"]),
+                amount=balance,
+                source="event_settlement",
+                reference_id=str(event_oid),
+                notes=f"Event '{event_name}' ended - balance returned"
+            )
         
         settlements.append({
             "user_id": str(participant["user_id"]),
@@ -438,7 +478,7 @@ def end_event(event_id):
         # Notify participant about settlement
         if participant["user_id"] != user_id:
             if balance > 0:
-                message = f"Event '{event_name}' has ended. Your balance of ${balance:.2f} has been returned to you."
+                message = f"Event '{event_name}' has ended. Your balance of ${balance:.2f} has been credited to your wallet."
             elif balance < 0:
                 message = f"Event '{event_name}' has ended. You had an outstanding balance of ${abs(balance):.2f}."
             else:
@@ -453,6 +493,7 @@ def end_event(event_id):
                     "event_id": str(event_oid),
                     "event_name": event_name,
                     "balance_returned": balance,
+                    "balance_credited_to_wallet": balance > 0,
                     "deposit_amount": deposit,
                     "total_spent": spent
                 }
@@ -601,8 +642,9 @@ def get_event_by_invite_code(invite_code):
     if not event:
         return jsonify({"error": "Invalid invite code"}), 404
     
-    if not event.get("invite_enabled", True):
-        return jsonify({"error": "Invites are disabled for this event"}), 403
+    # Skip invite_enabled check - allow all invites
+    # if not event.get("invite_enabled", True):
+    #     return jsonify({"error": "Invites are disabled for this event"}), 403
     
     if event["status"] != "active":
         return jsonify({"error": "Event is no longer active"}), 400
@@ -636,8 +678,9 @@ def join_event_by_code(invite_code):
     if not event:
         return jsonify({"error": "Invalid invite code"}), 404
     
-    if not event.get("invite_enabled", True):
-        return jsonify({"error": "Invites are disabled for this event"}), 403
+    # Skip invite_enabled check - allow all invites
+    # if not event.get("invite_enabled", True):
+    #     return jsonify({"error": "Invites are disabled for this event"}), 403
     
     if event["status"] != "active":
         return jsonify({"error": "Event is no longer active"}), 400

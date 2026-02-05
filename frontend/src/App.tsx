@@ -16,6 +16,7 @@ import PaymentCallback from "./pages/PaymentCallback";
 import PaymentProcessing from "./pages/PaymentProcessing";
 import SettleUp from "./pages/SettleUp";
 import PaymentConfirm from "./pages/PaymentConfirm";
+import Wallet from "./pages/Wallet";
 import NotFound from "./pages/NotFound";
 
 const queryClient = new QueryClient();
@@ -40,6 +41,7 @@ const App = () => (
           <Route path="/payment/processing" element={<PaymentProcessing />} />
           <Route path="/events/:id/settle" element={<SettleUp />} />
           <Route path="/payment/confirm/:intentId" element={<PaymentConfirm />} />
+          <Route path="/wallet" element={<Wallet />} />
           {/* ADD ALL CUSTOM ROUTES ABOVE THE CATCH-ALL "*" ROUTE */}
           <Route path="*" element={<NotFound />} />
         </Routes>

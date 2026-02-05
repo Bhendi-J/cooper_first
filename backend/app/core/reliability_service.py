@@ -231,11 +231,8 @@ class ReliabilityService:
         tier = cls.get_user_tier(user_id)
         restrictions = cls.get_tier_restrictions(tier)
         
-        # Restricted users cannot join
-        if tier == ReliabilityTier.RESTRICTED:
-            return False, "Your account is restricted due to outstanding debts. Please settle your debts first.", None
-        
-        # Return deposit multiplier for other tiers
+        # Allow all users to join but with different restrictions
+        # Restricted users get a warning but can still join with higher deposit
         multiplier = restrictions["join_deposit_multiplier"]
         message = restrictions["warning_message"]
         

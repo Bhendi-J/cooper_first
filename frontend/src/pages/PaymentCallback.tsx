@@ -106,18 +106,36 @@ export default function PaymentCallback() {
         
         setIsSimulating(true);
         try {
-            await simulatePaymentSuccess(intentId);
-            toast({
-                title: 'Simulating payment...',
-                description: 'Confirming your deposit now.',
+            const result = await simulatePaymentSuccess(intentId);
+            
+            // Payment confirmed - set success immediately
+            setStatus('success');
+            setPaymentData({
+                amount: result.amount,
+                purpose: result.purpose,
+                transaction_hash: result.transactionHash,
             });
-            // Force a status check after simulation
-            await checkStatus();
+            
+            toast({
+                title: '🎉 Payment Confirmed!',
+                description: 'Your deposit has been added to your balance.',
+            });
+            
+            // Cleanup localStorage
+            localStorage.removeItem('finternet_intent_id');
+            localStorage.removeItem('pending_deposit_event_id');
+            localStorage.removeItem('pending_deposit_amount');
+            
+            // Auto-redirect after 2 seconds
+            setTimeout(() => {
+                navigate(returnUrl);
+            }, 2000);
+            
         } catch (error: any) {
             console.error('Simulation error:', error);
             toast({
-                title: 'Simulation failed',
-                description: error.message || 'Could not simulate payment',
+                title: 'Confirmation failed',
+                description: error.message || 'Could not confirm payment',
                 variant: 'destructive',
             });
         } finally {
@@ -155,6 +173,8 @@ export default function PaymentCallback() {
                         const success = await handlePendingExpense();
                         if (success) {
                             setStatus('success');
+                            // Auto-redirect after 2 seconds
+                            setTimeout(() => navigate(returnUrl), 2000);
                             return;
                         }
                     } catch (error) {
@@ -179,6 +199,9 @@ export default function PaymentCallback() {
                     title: '🎉 Payment Confirmed!',
                     description: `Your payment has been processed successfully.`,
                 });
+                
+                // Auto-redirect after 2 seconds
+                setTimeout(() => navigate(returnUrl), 2000);
                 return;
             } else if (finternetData.status === 'CANCELLED') {
                 setStatus('failed');
@@ -199,8 +222,11 @@ export default function PaymentCallback() {
                         
                         toast({
                             title: '🎉 Payment Confirmed!',
-                            description: `$${trackingData.amount} has been added to your balance.`,
+                            description: `₹${trackingData.amount} has been added to your balance.`,
                         });
+                        
+                        // Auto-redirect after 2 seconds
+                        setTimeout(() => navigate(returnUrl), 2000);
                         return;
                     }
                 } catch (e) {
@@ -227,8 +253,11 @@ export default function PaymentCallback() {
                     
                     toast({
                         title: '🎉 Payment Confirmed!',
-                        description: `$${trackingData.amount} has been added to your balance.`,
+                        description: `₹${trackingData.amount} has been added to your balance.`,
                     });
+                    
+                    // Auto-redirect after 2 seconds
+                    setTimeout(() => navigate(returnUrl), 2000);
                     return;
                 } else if (trackingData.status === 'failed' || trackingData.status === 'cancelled') {
                     setStatus('failed');

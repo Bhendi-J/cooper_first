@@ -10,6 +10,7 @@ import {
   dashboardsAPI, 
   analyticsAPI,
   settlementsAPI,
+  walletsAPI,
   Event, 
   UserSummary, 
   RecentActivity, 
@@ -82,21 +83,24 @@ export default function Dashboard() {
   const [unreadCount, setUnreadCount] = useState(0);
   const [showNotifications, setShowNotifications] = useState(false);
   const [isLoading, setIsLoading] = useState(true);
+  const [walletBalance, setWalletBalance] = useState(0);
 
-  // Fetch user's events on mount
+  // Fetch user's events on mount and when page gets focus
   useEffect(() => {
     const fetchData = async () => {
       try {
         setIsLoading(true);
-        const [eventsRes, summaryRes, activityRes, analyticsRes, notifRes] = await Promise.all([
+        const [eventsRes, summaryRes, activityRes, analyticsRes, notifRes, walletRes] = await Promise.all([
           eventsAPI.list(),
           usersAPI.getSummary(),
           dashboardsAPI.getRecentActivity(5),
           analyticsAPI.getOverview(),
           settlementsAPI.getNotifications(false, 10).catch(() => ({ data: { notifications: [], unread_count: 0 } })),
+          walletsAPI.getBalance().catch(() => ({ data: { balance: 0 } })),
         ]);
         setEvents(eventsRes.data.events || []);
         setSummary(summaryRes.data);
+        setWalletBalance(walletRes.data.balance || 0);
         setRecentActivity(activityRes.data.activities || []);
         setAnalytics(analyticsRes.data);
         setNotifications(notifRes.data.notifications || []);
@@ -115,7 +119,20 @@ export default function Dashboard() {
         setIsLoading(false);
       }
     };
+    
     fetchData();
+    
+    // Refetch when page becomes visible (e.g., after navigating back)
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        fetchData();
+      }
+    };
+    
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+    return () => {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    };
   }, [toast]);
 
   const handleMarkNotificationRead = async (notifId: string) => {
@@ -169,7 +186,8 @@ export default function Dashboard() {
   };
 
   // Calculate totals from real data
-  const totalBalance = events.reduce((acc, event) => acc + (event.total_pool || 0), 0);
+  const totalBalance = summary?.total_balance ?? 0;
+  const totalDeposits = summary?.total_deposits ?? 0;
   const activeEvents = events.filter((e) => e.status === 'active').length;
 
   return (
@@ -269,6 +287,13 @@ export default function Dashboard() {
                   className="absolute right-0 mt-2 w-48 glass-card rounded-xl py-2 shadow-xl"
                 >
                   <Link
+                    to="/wallet"
+                    className="flex items-center gap-2 px-4 py-2 hover:bg-accent transition-colors"
+                  >
+                    <Wallet className="w-4 h-4" />
+                    <span>My Wallet</span>
+                  </Link>
+                  <Link
                     to="/profile"
                     className="flex items-center gap-2 px-4 py-2 hover:bg-accent transition-colors"
                   >
@@ -309,19 +334,33 @@ export default function Dashboard() {
           initial={{ opacity: 0, y: 20 }}
           animate={{ opacity: 1, y: 0 }}
           transition={{ delay: 0.1 }}
-          className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-8"
+          className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-8"
         >
-          <div className="glass-card p-6 rounded-xl">
+          <Link to="/wallet" className="glass-card p-6 rounded-xl hover:ring-2 ring-primary/50 transition-all cursor-pointer">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-muted-foreground">Your Total Balance</p>
+              <p className="text-muted-foreground">Wallet Balance</p>
               <div className="w-10 h-10 rounded-lg gradient-primary-subtle flex items-center justify-center">
                 <Wallet className="w-5 h-5 text-primary" />
               </div>
             </div>
-            <p className="text-3xl font-bold">₹{totalBalance.toLocaleString()}</p>
-            <p className="text-sm text-success flex items-center gap-1 mt-2">
-              <ArrowUpRight className="w-4 h-4" />
-              Across all events
+            <p className="text-3xl font-bold">${walletBalance.toLocaleString()}</p>
+            <p className="text-sm flex items-center gap-1 mt-2 text-primary">
+              <ChevronRight className="w-4 h-4" />
+              Manage wallet
+            </p>
+          </Link>
+
+          <div className="glass-card p-6 rounded-xl">
+            <div className="flex items-center justify-between mb-4">
+              <p className="text-muted-foreground">Event Balance</p>
+              <div className="w-10 h-10 rounded-lg bg-success/10 flex items-center justify-center">
+                <TrendingUp className="w-5 h-5 text-success" />
+              </div>
+            </div>
+            <p className="text-3xl font-bold">${totalBalance.toLocaleString()}</p>
+            <p className={`text-sm flex items-center gap-1 mt-2 ${totalBalance >= 0 ? 'text-success' : 'text-destructive'}`}>
+              {totalBalance >= 0 ? <ArrowUpRight className="w-4 h-4" /> : <ArrowDownRight className="w-4 h-4" />}
+              {totalBalance >= 0 ? 'Across events' : 'You owe money'}
             </p>
           </div>
 
@@ -340,13 +379,13 @@ export default function Dashboard() {
 
           <div className="glass-card p-6 rounded-xl">
             <div className="flex items-center justify-between mb-4">
-              <p className="text-muted-foreground">Total Expenses</p>
+              <p className="text-muted-foreground">Your Expenses</p>
               <div className="w-10 h-10 rounded-lg bg-warning/10 flex items-center justify-center">
                 <PieChart className="w-5 h-5 text-warning" />
               </div>
             </div>
-            <p className="text-3xl font-bold">₹{(summary?.total_expense_amount || 0).toLocaleString()}</p>
-            <p className="text-sm text-muted-foreground mt-2">{summary?.expense_count || 0} expenses added by you</p>
+            <p className="text-3xl font-bold">${(summary?.total_expense_amount || 0).toLocaleString()}</p>
+            <p className="text-sm text-muted-foreground mt-2">{summary?.expense_count || 0} expenses paid</p>
           </div>
         </motion.div>
 

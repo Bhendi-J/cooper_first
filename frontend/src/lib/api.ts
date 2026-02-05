@@ -180,15 +180,16 @@ export interface JoinRequest {
 // =====================
 export interface PendingApproval {
   _id: string;
-  expense_id: string;
   event_id: string;
-  user_id: string;
-  user_name?: string;
+  payer_id: string;
+  payer_name?: string;
   amount: number;
   description?: string;
-  status: 'pending' | 'approved' | 'rejected';
-  reason?: string;
-  created_at: string;
+  status?: 'pending' | 'pending_approval' | 'approved' | 'rejected';
+  approval_status?: 'pending' | 'approved' | 'rejected';
+  category_id?: string;
+  split_type?: string;
+  created_at?: string;
 }
 
 // =====================
@@ -231,6 +232,14 @@ export const eventsAPI = {
   // Join an event by event ID (deprecated, use joinByCode instead)
   join: (id: string) => api.post<{ message: string }>(`/events/${id}/join`),
 
+  // Leave an event and withdraw balance
+  leave: (id: string) =>
+    api.post<{
+      message: string;
+      amount_withdrawn: number;
+      event_name: string;
+    }>(`/events/${id}/leave`),
+
   // Get event preview by invite code (public)
   getByInviteCode: (code: string) =>
     api.get<{ event: Partial<Event> & { creator_name: string; participant_count: number } }>(
@@ -263,7 +272,7 @@ export const eventsAPI = {
   deposit: (id: string, amount: number) =>
     api.post<{ message: string; amount: number }>(`/events/${id}/deposit`, { amount }),
 
-  // Deposit money via Finternet (returns payment URL)
+  // Deposit money via Finternet (returns payment URL or confirms immediately)
   depositWithFinternet: (id: string, amount: number, currency = 'USDC') =>
     api.post<{
       message: string;
@@ -271,6 +280,11 @@ export const eventsAPI = {
       intent_id: string;
       finternet_id: string;
       amount: number;
+      status?: 'CONFIRMED' | 'INITIATED' | 'PROCESSING';
+      transaction_hash?: string;
+      block_number?: number;
+      chain?: string;
+      confirmations?: number;
     }>(`/events/${id}/deposit`, { amount, currency, use_finternet: true }),
 
   // Get invite link info
@@ -289,6 +303,55 @@ export const eventsAPI = {
       `/events/${id}/invite-link`,
       data
     ),
+
+  // Transfer event ownership to another participant
+  transferOwnership: (id: string, newOwnerId: string) =>
+    api.post<{
+      message: string;
+      new_owner_id: string;
+      new_owner_name: string;
+    }>(`/events/${id}/transfer-ownership`, { new_owner_id: newOwnerId }),
+
+  // Delete an event (creator only)
+  delete: (id: string) =>
+    api.delete<{
+      message: string;
+      event_name: string;
+      participants_notified: number;
+    }>(`/events/${id}`),
+
+  // End an event and distribute balances (creator only)
+  end: (id: string) =>
+    api.post<{
+      message: string;
+      event_name: string;
+      status: string;
+      settlements: Array<{
+        user_id: string;
+        user_name: string;
+        deposit_amount: number;
+        total_spent: number;
+        balance_returned: number;
+        net_position: number;
+      }>;
+      total_pool: number;
+      total_spent: number;
+      participants_count: number;
+    }>(`/events/${id}/end`),
+
+  // Recalculate pool from scratch (creator only)
+  recalculatePool: (id: string) =>
+    api.post<{
+      message: string;
+      before: { total_pool: number; total_spent: number };
+      after: {
+        total_deposits: number;
+        total_spent: number;
+        total_pool: number;
+        participants_updated: number;
+        expenses_counted: number;
+      };
+    }>(`/events/${id}/recalculate-pool`),
 
   // Alias for get (some components use getById)
   getById: (id: string) => api.get<Event>(`/events/${id}`),
@@ -388,6 +451,9 @@ export interface UserSummary {
   events: number;
   expense_count: number;
   total_expense_amount: number;
+  total_balance: number;
+  total_deposits: number;
+  net_position: number;
 }
 
 export const usersAPI = {
@@ -396,6 +462,10 @@ export const usersAPI = {
 
   // Get user's summary stats
   getSummary: () => api.get<UserSummary>('/users/summary'),
+
+  // Search for users by email or name
+  search: (query: string) =>
+    api.get<{ users: Array<{ _id: string; name: string; email: string }> }>(`/users/search?q=${encodeURIComponent(query)}`),
 };
 
 // =====================
@@ -475,13 +545,43 @@ export const walletsAPI = {
   getUserBalance: (userId: string) =>
     api.get<{ user_id: string; balance: number }>(`/wallets/balance/${userId}`),
 
-  // Deposit to wallet (top-up)
-  deposit: (amount: number) =>
-    api.post<{ status: string; message: string; new_balance: number }>('/wallets/deposit', { amount }),
+  // Initiate deposit via Finternet (returns payment URL)
+  deposit: (amount: number, useFinternet = true) =>
+    api.post<{
+      status: string;
+      message: string;
+      intent_id?: string;
+      payment_url?: string;
+      amount: number;
+      new_balance?: number;
+    }>('/wallets/deposit', { amount, use_finternet: useFinternet }),
 
-  // Withdraw from wallet
+  // Confirm deposit after Finternet payment
+  confirmDeposit: (intentId: string) =>
+    api.post<{
+      status: string;
+      message: string;
+      amount: number;
+      new_balance: number;
+    }>('/wallets/deposit/confirm', { intent_id: intentId }),
+
+  // Withdraw from wallet (1% fee applies) via Finternet
   withdraw: (amount: number) =>
-    api.post<{ status: string; message: string; amount_withdrawn: number; new_balance: number }>('/wallets/withdraw', { amount }),
+    api.post<{
+      status: string;
+      message: string;
+      gross_amount: number;
+      fee_amount: number;
+      fee_percent: number;
+      net_amount: number;
+      amount_withdrawn: number;
+      new_balance: number;
+      payment_url?: string;
+    }>('/wallets/withdraw', { amount }),
+
+  // Get withdrawal fee info
+  getWithdrawalFee: () =>
+    api.get<{ fee_percent: number; description: string }>('/wallets/withdrawal-fee'),
 
   // Get wallet transaction history
   getTransactions: (page = 1, perPage = 20) =>
